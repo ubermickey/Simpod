@@ -1,0 +1,87 @@
+name: Simpod
+options:
+  bundleIdPrefix: com.simpod
+  deploymentTarget:
+    iOS: "17.0"
+  xcodeVersion: "16.0"
+  minimumXcodeGenVersion: "2.38"
+  groupSortPosition: top
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    GENERATE_INFOPLIST_FILE: YES
+    CURRENT_PROJECT_VERSION: 1
+    MARKETING_VERSION: "0.1.0"
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: X7Y74FL2Q9
+
+packages:
+  GRDB:
+    url: https://github.com/groue/GRDB.swift
+    from: "7.0.0"
+  FeedKit:
+    url: https://github.com/nmdias/FeedKit
+    from: "10.0.0"
+
+targets:
+  Simpod:
+    type: application
+    platform: iOS
+    sources:
+      - Sources
+    resources:
+      - Resources
+    dependencies:
+      - package: GRDB
+      - package: FeedKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.mikeudem.simpod
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: "UIInterfaceOrientationPortrait"
+        INFOPLIST_KEY_UIBackgroundModes: "audio fetch processing"
+        INFOPLIST_KEY_CFBundleDisplayName: "Simpod"
+        SWIFT_STRICT_CONCURRENCY: complete
+    infoPlist:
+      BGTaskSchedulerPermittedIdentifiers:
+        - com.simpod.feedRefresh
+      CFBundleDocumentTypes:
+        - CFBundleTypeName: "OPML File"
+          LSItemContentTypes:
+            - "public.xml"
+          CFBundleTypeRole: "Viewer"
+    # entitlements disabled — personal dev team doesn't support iCloud.
+    # Re-enable when using a paid Apple Developer account:
+    # entitlements:
+    #   path: Simpod.entitlements
+    #   properties:
+    #     com.apple.developer.icloud-container-identifiers:
+    #       - "iCloud.com.simpod.app"
+    #     com.apple.developer.icloud-services:
+    #       - CloudKit
+
+  SimpodTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - Tests/SimpodTests
+    dependencies:
+      - target: Simpod
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+
+  SimpodUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - Tests/SimpodUITests
+    dependencies:
+      - target: Simpod
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES

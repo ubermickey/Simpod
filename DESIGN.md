@@ -24,6 +24,7 @@ ALWAYS write the philosophy statement before writing a single line of CSS. If yo
 | JackWriter | Japanese night palette | Calm focus | No bright colors during writing | The midnight study |
 | PredictoCoin | Financial precision | Data density without clutter | No decorative elements near numbers | The confident dashboard |
 | PodBot | Beverly Hills Superflat | Warm, playful, Murakami-inspired | Dark/bright as equal moods | The podcast companion |
+| Simpod | Clean-minimal | "It just works" + aesthetic restraint | Fewest taps, no decorative waste | The invisible player |
 
 WHEN starting a new project with UI, THEN define the Design Philosophy Formula at Council Session #1 and record it in CLAUDE.md. The formula IS the design's PDSA hypothesis.
 
@@ -225,6 +226,22 @@ Projects with significant UI may define a design gate persona — a named review
 ```
 
 Store persona documents as `{PersonaName}.md` in the project root. Reference in CLAUDE.md under `## AI Personas`.
+
+### 5.5 Simpod Design Gate Reviewers
+
+Simpod uses two review lenses for all UI/UX changes. Both must pass before implementation proceeds.
+
+**Steve Jobs Lens** — Minimalism, "it just works", fewer taps
+- Would Steve ship this? If the user needs instructions, it's wrong.
+- Every tap must earn its place. If a two-tap flow can be one tap, it must be one tap.
+- Complexity is the enemy. Remove until it breaks, then add one thing back.
+
+**Murakami Lens** — Aesthetic restraint, emotional clarity
+- Does the visual language evoke the right emotion without clutter?
+- Is there warmth and personality without sacrificing function?
+- Dark and light modes are equal citizens — neither is an afterthought.
+
+**Process:** Before implementing any UI change, describe the change and evaluate it against both lenses. If either lens rejects, revise the design before writing code. Log the review verdict in the pass record.
 
 ---
 

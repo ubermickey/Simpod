@@ -589,6 +589,7 @@ ALWAYS write recovery tests when:
 Design gates are quality bars for UI work. They are G8 in the verification gate pipeline. Derived from the five-criteria system, generalized for any project.
 
 -> See DESIGN.md §5 for the full gate criteria, persona system, and when to run design gates.
+-> Simpod: All UI changes must pass the Steve Jobs lens (minimalism, fewer taps) AND Murakami lens (aesthetic restraint, emotional clarity) before implementation. See DESIGN.md §5.5.
 
 ### 5.1 Integration with Verification Pipeline
 

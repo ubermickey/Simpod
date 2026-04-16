@@ -90,7 +90,118 @@ When project declared done, run retrospective (OPERATIONS.md §Retrospective), e
 - ALWAYS read session handoff records at session start for context continuity
 - ALWAYS follow the three-tier model: Talk/Think/Build (→ See TEAM.md)
 - NEVER declare a project done without user confirmation
+- ALWAYS run UI/UX changes through the design gate (DESIGN.md §5) with Steve Jobs and Murakami review lens before implementation — no UI ships without explicit design review
 - ALWAYS produce a Requirements Brief before the 60-Second Probe
+
+---
+
+## Project Overview
+
+Simpod is a native iOS offline-first podcast player for Mike — a power listener, commuter, and privacy-conscious user who wants "Overcast but it actually works" with Castro-style inbox triage.
+
+## Commands
+
+### Build / Test / Run
+```bash
+xcodegen generate              # Regenerate .xcodeproj from project.yml
+xcodebuild -project Simpod.xcodeproj -scheme Simpod -destination 'platform=iOS Simulator,name=iPhone 16' build
+xcodebuild -project Simpod.xcodeproj -scheme SimpodTests -destination 'platform=iOS Simulator,name=iPhone 16' test
+```
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────┐
+│                  SwiftUI Views              │
+│  Inbox │ Queue │ NowPlaying │ Search │ Settings │
+├─────────────────────────────────────────────┤
+│              InboxManager                   │
+├──────────┬──────────┬───────────────────────┤
+│FeedEngine│AudioEngine│   DownloadManager    │
+│(FeedKit) │(AVAudio  │   (URLSession bg)    │
+│          │ Engine)  │                       │
+├──────────┴──────────┴───────────────────────┤
+│              DataStore (GRDB/SQLite)        │
+├─────────────────────────────────────────────┤
+│          SyncEngine (CKSyncEngine)          │
+└─────────────────────────────────────────────┘
+```
+
+## Tech Stack (Council #1 — 2026-04-14)
+
+| Layer | Choice | ADR |
+|-------|--------|-----|
+| Platform | Swift 6.3, SwiftUI, iOS 17+ | Native for AVFoundation + Background Modes |
+| RSS Parsing | FeedKit v10 | Podcast-native, async/await, best AI-friendliness score |
+| Audio Engine | AVAudioEngine (from start) | Full audio processing: Smart Speed, Voice Boost, no migration |
+| Persistence | GRDB (SQLite) | Best perf, full SQL escape hatch, clean CKSyncEngine pairing |
+| Cloud Sync | CKSyncEngine (in MVP) | iOS 17+, works with any store, avoids SwiftData pitfalls |
+| Podcast Search | Podcast Index API + Apple iTunes Lookup | Free, open, Podcasting 2.0 |
+| Downloads | URLSession background config | Survives app termination |
+| Feed Refresh | BGTaskScheduler | System-scheduled, battery-friendly |
+
+## Module Contracts
+
+| Module | Provides | Requires | Invariants | Status |
+|--------|----------|----------|------------|--------|
+| FeedEngine | subscribe, refresh, refreshAll, importOPML | URLSession, FeedKit, DataStore | No crash on malformed RSS; idempotent | DRAFT |
+| AudioEngine | play, pause, seek, speed, state | AVAudioEngine, Episode URLs | Never silent fail; position persisted | DRAFT |
+| DownloadManager | download, cancel, progress, delete | URLSession bg, file storage, DataStore | Bg downloads; resumable; queryable size | DRAFT |
+| DataStore | CRUD for all entities, tags | GRDB, CloudKit hook | Reads never block; queue consistent | DRAFT |
+| SyncEngine | syncNow, syncState, lastSync | CKSyncEngine, DataStore | No overwrite newer; auto-retry; restore | DRAFT |
+| InboxManager | triage, triageAll, inboxCount | DataStore | All episodes start in inbox; one-tap | DRAFT |
+
+## Key Paths
+
+| Path | Purpose |
+|------|---------|
+| Sources/App/ | SwiftUI app entry point + content view |
+| Sources/Models/ | Data models (Podcast, Episode, QueueItem, Tag) |
+| Sources/Modules/ | Module implementations (FeedEngine, AudioEngine, etc.) |
+| Sources/Views/ | SwiftUI views organized by screen |
+| Tests/SimpodTests/ | Unit tests |
+| project.yml | XcodeGen project definition |
+| REQUIREMENTS_BRIEF.md | Full interview results |
+| RESEARCH.md | Technology evaluation scorecards |
+
+## Key Patterns
+
+| Pattern | Where | Explanation |
+|---------|-------|-------------|
+| Castro-style inbox | InboxView, InboxManager | New episodes → inbox → triage (queue or skip) |
+| Minimal chrome | All views | Overcast-inspired: fewest possible taps, sparse UI |
+| Protocol-first modules | Modules/ | Each module exposes a protocol; implementations are swappable |
+| Sync-aware data model | Models/, DataStore | All entities carry sync metadata (timestamps, CKRecord mapping) |
+
+## Swim Lanes
+
+| Lane | Features | Dependencies | Status |
+|------|----------|-------------|--------|
+| Lane 1: Feed + Audio | RSS parsing, audio engine, downloads | None | NOT STARTED |
+| Lane 2: UI Shell + Inbox | All SwiftUI screens, inbox triage | None (mock data) | NOT STARTED |
+| Lane 3: iCloud Sync | CKSyncEngine, CloudKit schema | None (local store) | NOT STARTED |
+| Lane 4: Integration | Wire all lanes together, E2E tests | Lanes 1+2+3 | NOT STARTED |
+| Lane 5: AI Playlists | AI service, recommendations | Lane 1 (post-MVP) | NOT STARTED |
+
+## Conventions
+
+- **Naming**: Swift API guidelines. Types: PascalCase. Properties/methods: camelCase.
+- **Architecture**: MVVM. Views observe @Observable view models.
+- **Concurrency**: Swift 6 strict concurrency. All models are Sendable. Async/await for I/O.
+- **Testing**: Swift Testing framework (`@Test`, `#expect`). No XCTest.
+- **Dependencies**: Swift Package Manager via project.yml.
+
+## Environment Variables
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| (none yet) | | |
+
+## Known Issues
+
+- AVAudioEngine requires manual streaming implementation (no built-in like AVPlayer)
+- Podcast RSS feeds often contain malformed XML — FeedKit + pre-parse sanitizer needed
+- CKSyncEngine requires manual CKRecord mapping for all entities
 
 ---
 

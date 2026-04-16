@@ -1,0 +1,47 @@
+# macOS
+.DS_Store
+Thumbs.db
+*.swp
+
+# Xcode
+*.xcodeproj/
+xcuserdata/
+*.xcworkspace/
+DerivedData/
+build/
+*.pbxuser
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+*.moved-aside
+
+# Swift Package Manager
+.build/
+Packages/
+Package.resolved
+*.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/
+
+# IDE
+.idea/
+.vscode/
+
+# Python (framework scripts)
+__pycache__/
+*.py[cod]
+.venv/
+
+# Environment
+.env
+.env.*
+*.pem
+credentials.json
+
+# Claude Code
+.claude/
+
+# Output
+output/
+*.db
+
+# Probe artifacts
+probe.swift
