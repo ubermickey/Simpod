@@ -20,7 +20,7 @@ struct EpisodeOptionsDrawer: View {
     @Environment(DownloadManager.self) private var downloadManager
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 0) {
             switch context {
             case .inbox:
                 inboxActions
@@ -29,6 +29,7 @@ struct EpisodeOptionsDrawer: View {
             }
         }
         .padding(.vertical, 8)
+        .padding(.horizontal, 4)
         .background(Color(.systemGray6))
         .cornerRadius(8)
     }
@@ -106,42 +107,31 @@ struct EpisodeOptionsDrawer: View {
                 }
             }
         } label: {
-            VStack(spacing: 6) {
-                Image(systemName: "arrow.down.circle")
-                    .font(.title2)
-                    .frame(width: 48, height: 48)
-                Text("Download")
-                    .font(.caption2)
-            }
+            Image(systemName: "arrow.down.circle")
+                .font(.title2)
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("Download")
     }
 
     // MARK: - Helpers
 
-    /// Generic icon-above-label action button.
+    /// Icon-only action button with even distribution across the bar.
     private func actionButton(_ symbol: String, _ label: String, action: @escaping () -> Void) -> some View {
-        Button {
-            action()
-        } label: {
-            VStack(spacing: 6) {
-                Image(systemName: symbol)
-                    .font(.title2)
-                    .frame(width: 48, height: 48)
-                Text(label)
-                    .font(.caption2)
-            }
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.title2)
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(label)
     }
 
-    /// Play an episode, preferring a local file over remote streaming.
+    /// Play an episode via queue-first routing: moves to queue position 0, then starts playback.
     private func playEpisode(_ ep: Episode) {
-        if let localPath = ep.localFilePath,
-           let fileURL = URL(string: localPath) ?? URL(fileURLWithPath: localPath) as URL? {
-            try? audioEngine.play(fileURL: fileURL, episodeID: ep.id, startPosition: ep.playbackPosition)
-        } else if let remoteURL = URL(string: ep.audioURL) {
-            audioEngine.playStream(url: remoteURL, episodeID: ep.id, startPosition: ep.playbackPosition)
-        }
+        try? dataStore.moveEpisodeToTopAndPlay(ep.id, audioEngine: audioEngine)
     }
 }

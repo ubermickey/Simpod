@@ -55,47 +55,47 @@ struct MiniPlayerView: View {
     @Binding var showNowPlaying: Bool
 
     var body: some View {
-        HStack(spacing: 16) {
-            Spacer()
-
-            // Controls cluster (CENTERED for both-hand accessibility)
-            HStack(spacing: 12) {
-                Button { try? audioEngine.skipBackward() } label: {
-                    Image(systemName: "gobackward.15")
-                        .font(.body)
+        HStack(spacing: 12) {
+            // Play/Pause — leftmost, largest, pink accent when playing
+            Button {
+                switch audioEngine.playbackState {
+                case .playing: audioEngine.pause()
+                case .paused: audioEngine.resume()
+                default: break
                 }
-                .buttonStyle(.borderless)
-
-                Button {
-                    switch audioEngine.playbackState {
-                    case .playing: audioEngine.pause()
-                    case .paused: audioEngine.resume()
-                    default: break
-                    }
-                } label: {
-                    Image(systemName: audioEngine.playbackState == .playing ? "pause.fill" : "play.fill")
-                        .font(.title3)
-                }
-                .buttonStyle(.borderless)
-
-                Button { try? audioEngine.skipForward() } label: {
-                    Image(systemName: "goforward.30")
-                        .font(.body)
-                }
-                .buttonStyle(.borderless)
-
-                Button { playNextInQueue() } label: {
-                    Image(systemName: "forward.fill")
-                        .font(.body)
-                }
-                .buttonStyle(.borderless)
+            } label: {
+                Image(systemName: audioEngine.playbackState == .playing ? "pause.fill" : "play.fill")
+                    .font(.title2.bold())
+                    .frame(width: 44, height: 44)
             }
-            .foregroundStyle(.primary)
+            .buttonStyle(.borderless)
+            .foregroundStyle(audioEngine.playbackState == .playing ? Color(hex: "#FF6B8A") : .primary)
+
+            Button { try? audioEngine.skipBackward() } label: {
+                Image(systemName: "gobackward.15")
+                    .font(.title3)
+                    .frame(width: 36, height: 36)
+            }
+            .buttonStyle(.borderless)
+
+            Button { try? audioEngine.skipForward() } label: {
+                Image(systemName: "goforward.30")
+                    .font(.title3)
+                    .frame(width: 36, height: 36)
+            }
+            .buttonStyle(.borderless)
+
+            Button { playNextInQueue() } label: {
+                Image(systemName: "forward.fill")
+                    .font(.body)
+                    .frame(width: 32, height: 32)
+            }
+            .buttonStyle(.borderless)
 
             Spacer()
 
             // Episode info (trailing)
-            VStack(alignment: .trailing) {
+            VStack(alignment: .trailing, spacing: 2) {
                 Text(currentEpisodeTitle)
                     .font(.caption.bold())
                     .lineLimit(1)
@@ -104,7 +104,17 @@ struct MiniPlayerView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
+
+            // Podcast artwork
+            AsyncImage(url: currentPodcast?.artworkURL.flatMap(URL.init)) { image in
+                image.resizable().aspectRatio(contentMode: .fill)
+            } placeholder: {
+                RoundedRectangle(cornerRadius: 6).fill(.quaternary)
+            }
+            .frame(width: 40, height: 40)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
         }
+        .foregroundStyle(.primary)
         .padding(.horizontal)
         .padding(.vertical, 8)
         .background(.ultraThinMaterial)
@@ -133,6 +143,12 @@ struct MiniPlayerView: View {
         return ""
     }
 
+    private var currentPodcast: Podcast? {
+        guard let episodeID = audioEngine.currentEpisodeID else { return nil }
+        return dataStore.inbox.first(where: { $0.episode.id == episodeID })?.podcast
+            ?? dataStore.queue.first(where: { $0.episode.id == episodeID })?.podcast
+    }
+
     private func playNextInQueue() {
         let queue = dataStore.queue
         guard !queue.isEmpty else { return }
@@ -141,19 +157,27 @@ struct MiniPlayerView: View {
            let currentIndex = queue.firstIndex(where: { $0.episode.id == currentID }),
            currentIndex + 1 < queue.count {
             let nextEpisode = queue[currentIndex + 1].episode
-            playEpisode(nextEpisode)
+            try? dataStore.moveEpisodeToTopAndPlay(nextEpisode.id, audioEngine: audioEngine)
         } else {
             let firstEpisode = queue[0].episode
-            playEpisode(firstEpisode)
+            try? dataStore.moveEpisodeToTopAndPlay(firstEpisode.id, audioEngine: audioEngine)
         }
-    }
 
-    private func playEpisode(_ episode: Episode) {
-        if let localPath = episode.localFilePath,
-           let fileURL = URL(string: localPath) ?? URL(fileURLWithPath: localPath) as URL? {
-            try? audioEngine.play(fileURL: fileURL, episodeID: episode.id, startPosition: episode.playbackPosition)
-        } else if let remoteURL = URL(string: episode.audioURL) {
-            audioEngine.playStream(url: remoteURL, episodeID: episode.id, startPosition: episode.playbackPosition)
-        }
+        // Auto-refill if queue runs low
+        try? dataStore.appendRandomRecentUnplayedEpisodeIfNeeded(currentlyPlayingID: audioEngine.currentEpisodeID)
+    }
+}
+
+extension Color {
+    init(hex: String) {
+        let hex = hex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+        let scanner = Scanner(string: hex)
+        var rgbValue: UInt64 = 0
+        scanner.scanHexInt64(&rgbValue)
+        self.init(
+            red: Double((rgbValue & 0xFF0000) >> 16) / 255.0,
+            green: Double((rgbValue & 0x00FF00) >> 8) / 255.0,
+            blue: Double(rgbValue & 0x0000FF) / 255.0
+        )
     }
 }

@@ -107,6 +107,56 @@ final class DataStore: @unchecked Sendable {
             }
         }
 
+        migrator.registerMigration("v3-fts5-search") { db in
+            try db.execute(sql: """
+                CREATE VIRTUAL TABLE podcastSearch USING fts5(
+                    title, author, podcastDescription,
+                    content=podcast, content_rowid=rowid,
+                    tokenize='unicode61'
+                );
+
+                INSERT INTO podcastSearch(podcastSearch) VALUES('rebuild');
+
+                CREATE TRIGGER podcast_ai AFTER INSERT ON podcast BEGIN
+                    INSERT INTO podcastSearch(rowid, title, author, podcastDescription)
+                    VALUES (NEW.rowid, NEW.title, NEW.author, NEW.podcastDescription);
+                END;
+                CREATE TRIGGER podcast_ad AFTER DELETE ON podcast BEGIN
+                    INSERT INTO podcastSearch(podcastSearch, rowid, title, author, podcastDescription)
+                    VALUES ('delete', OLD.rowid, OLD.title, OLD.author, OLD.podcastDescription);
+                END;
+                CREATE TRIGGER podcast_au AFTER UPDATE ON podcast BEGIN
+                    INSERT INTO podcastSearch(podcastSearch, rowid, title, author, podcastDescription)
+                    VALUES ('delete', OLD.rowid, OLD.title, OLD.author, OLD.podcastDescription);
+                    INSERT INTO podcastSearch(rowid, title, author, podcastDescription)
+                    VALUES (NEW.rowid, NEW.title, NEW.author, NEW.podcastDescription);
+                END;
+
+                CREATE VIRTUAL TABLE episodeSearch USING fts5(
+                    title, episodeDescription,
+                    content=episode, content_rowid=rowid,
+                    tokenize='unicode61'
+                );
+
+                INSERT INTO episodeSearch(episodeSearch) VALUES('rebuild');
+
+                CREATE TRIGGER episode_ai AFTER INSERT ON episode BEGIN
+                    INSERT INTO episodeSearch(rowid, title, episodeDescription)
+                    VALUES (NEW.rowid, NEW.title, NEW.episodeDescription);
+                END;
+                CREATE TRIGGER episode_ad AFTER DELETE ON episode BEGIN
+                    INSERT INTO episodeSearch(episodeSearch, rowid, title, episodeDescription)
+                    VALUES ('delete', OLD.rowid, OLD.title, OLD.episodeDescription);
+                END;
+                CREATE TRIGGER episode_au AFTER UPDATE ON episode BEGIN
+                    INSERT INTO episodeSearch(episodeSearch, rowid, title, episodeDescription)
+                    VALUES ('delete', OLD.rowid, OLD.title, OLD.episodeDescription);
+                    INSERT INTO episodeSearch(rowid, title, episodeDescription)
+                    VALUES (NEW.rowid, NEW.title, NEW.episodeDescription);
+                END;
+                """)
+        }
+
         try migrator.migrate(db)
     }
 
@@ -323,6 +373,60 @@ final class DataStore: @unchecked Sendable {
 
     var inboxCount: Int { inbox.count }
 
+    // MARK: - Local Search
+
+    struct LocalSearchResults {
+        var podcasts: [Podcast]
+        var episodes: [EpisodeWithPodcast]
+    }
+
+    func searchLocal(query: String) throws -> LocalSearchResults {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return LocalSearchResults(podcasts: [], episodes: [])
+        }
+
+        let ftsQuery = trimmed.split(separator: " ")
+            .map { "\($0)*" }
+            .joined(separator: " ")
+
+        return try db.read { db in
+            let podcastRowIDs = try Int64.fetchAll(db, sql: """
+                SELECT rowid FROM podcastSearch WHERE podcastSearch MATCH ? ORDER BY rank
+                """, arguments: [ftsQuery])
+
+            let podcasts: [Podcast]
+            if podcastRowIDs.isEmpty {
+                podcasts = []
+            } else {
+                let placeholders = podcastRowIDs.map { _ in "?" }.joined(separator: ",")
+                podcasts = try Podcast.fetchAll(db, sql: """
+                    SELECT * FROM podcast WHERE rowid IN (\(placeholders))
+                    """, arguments: StatementArguments(podcastRowIDs))
+            }
+
+            let episodeRowIDs = try Int64.fetchAll(db, sql: """
+                SELECT rowid FROM episodeSearch WHERE episodeSearch MATCH ? ORDER BY rank
+                """, arguments: [ftsQuery])
+
+            var episodes: [EpisodeWithPodcast] = []
+            if !episodeRowIDs.isEmpty {
+                let placeholders = episodeRowIDs.map { _ in "?" }.joined(separator: ",")
+                let matchedEpisodes = try Episode.fetchAll(db, sql: """
+                    SELECT * FROM episode WHERE rowid IN (\(placeholders))
+                    """, arguments: StatementArguments(episodeRowIDs))
+
+                for episode in matchedEpisodes {
+                    if let podcast = try Podcast.fetchOne(db, id: episode.podcastID) {
+                        episodes.append(EpisodeWithPodcast(episode: episode, podcast: podcast))
+                    }
+                }
+            }
+
+            return LocalSearchResults(podcasts: podcasts, episodes: episodes)
+        }
+    }
+
     // MARK: - Direct Queries (for tests and sync)
 
     func fetchQueue() throws -> [QueueItemWithEpisodeAndPodcast] {
@@ -489,6 +593,95 @@ final class DataStore: @unchecked Sendable {
                 episode.lastModified = .now
                 try episode.update(db)
             }
+        }
+    }
+
+    // MARK: - Playback Continuity
+
+    /// Move an episode to queue position 0 and start playback.
+    /// Deduplicates: removes any existing queue entry for this episode first.
+    func moveEpisodeToTopAndPlay(_ episodeID: UUID, audioEngine: AudioEngine) throws {
+        try db.write { db in
+            // Remove existing queue entry if present (deduplicate)
+            _ = try QueueItem
+                .filter(QueueItem.Columns.episodeID == episodeID)
+                .deleteAll(db)
+
+            // Shift all existing queue items down by 1
+            let existing = try QueueItem
+                .order(QueueItem.Columns.order)
+                .fetchAll(db)
+
+            for var qi in existing {
+                qi.order += 1
+                qi.lastModified = .now
+                try qi.update(db)
+            }
+
+            // Insert at position 0
+            let newItem = QueueItem(episodeID: episodeID, order: 0)
+            try newItem.save(db)
+
+            // Update episode status
+            if var episode = try Episode.fetchOne(db, id: episodeID) {
+                episode.status = .queued
+                episode.lastModified = .now
+                try episode.update(db)
+
+                // Start playback
+                if let localPath = episode.localFilePath,
+                   let fileURL = URL(string: localPath) ?? URL(fileURLWithPath: localPath) as URL? {
+                    try audioEngine.play(fileURL: fileURL, episodeID: episode.id, startPosition: episode.playbackPosition)
+                } else if let remoteURL = URL(string: episode.audioURL) {
+                    audioEngine.playStream(url: remoteURL, episodeID: episode.id, startPosition: episode.playbackPosition)
+                }
+            }
+        }
+    }
+
+    /// Append one random eligible unplayed episode from the last 24 hours to the queue,
+    /// but only if no next queue item exists after the currently playing one.
+    func appendRandomRecentUnplayedEpisodeIfNeeded(currentlyPlayingID: UUID?) throws {
+        try db.write { db in
+            let items = try QueueItem
+                .order(QueueItem.Columns.order)
+                .fetchAll(db)
+
+            // Check if a next item exists after the currently playing one
+            if let playingID = currentlyPlayingID,
+               let currentIndex = items.firstIndex(where: { $0.episodeID == playingID }),
+               currentIndex + 1 < items.count {
+                return // Next item exists, no refill needed
+            }
+
+            let currentQueueEpisodeIDs = items.map(\.episodeID)
+            let cutoff = Date.now.addingTimeInterval(-86400)
+
+            // Find eligible episodes: published <24h ago, inbox status, strictly unplayed, not in queue, not playing
+            var candidates = try Episode
+                .filter(Episode.Columns.publishedDate > cutoff)
+                .filter(Episode.Columns.status == EpisodeStatus.inbox.rawValue)
+                .filter(Episode.Columns.playbackPosition == 0)
+                .fetchAll(db)
+
+            // Exclude episodes already in queue and currently playing
+            candidates = candidates.filter { ep in
+                !currentQueueEpisodeIDs.contains(ep.id) && ep.id != currentlyPlayingID
+            }
+
+            guard !candidates.isEmpty else { return }
+
+            // Random selection
+            let picked = candidates.randomElement()!
+            let maxOrder = items.last?.order ?? -1
+            let newItem = QueueItem(episodeID: picked.id, order: maxOrder + 1)
+            try newItem.save(db)
+
+            // Update status to queued
+            var episode = picked
+            episode.status = .queued
+            episode.lastModified = .now
+            try episode.update(db)
         }
     }
 

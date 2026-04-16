@@ -1,25 +1,83 @@
 import SwiftUI
 
 struct SearchView: View {
+    @Environment(DataStore.self) private var dataStore
     @Environment(FeedEngine.self) private var feedEngine
-    @Environment(\.dismiss) private var dismiss
 
     @State private var query = ""
-    @State private var results: [PodcastSearchResult] = []
-    @State private var isLoading = false
+    @State private var localPodcasts: [Podcast] = []
+    @State private var localEpisodes: [EpisodeWithPodcast] = []
+    @State private var remoteResults: [PodcastSearchResult] = []
+    @State private var isSearchingRemote = false
     @State private var errorMessage: String?
     @State private var searchService = PodcastSearchService()
 
     var body: some View {
         NavigationStack {
             List {
-                if isLoading {
-                    HStack {
-                        Spacer()
-                        ProgressView()
-                        Spacer()
+                if !localPodcasts.isEmpty {
+                    Section("Subscribed Shows") {
+                        ForEach(localPodcasts) { podcast in
+                            HStack(spacing: 12) {
+                                AsyncImage(url: podcast.artworkURL.flatMap(URL.init)) { image in
+                                    image.resizable().aspectRatio(contentMode: .fill)
+                                } placeholder: {
+                                    RoundedRectangle(cornerRadius: 6).fill(.quaternary)
+                                }
+                                .frame(width: 44, height: 44)
+                                .clipShape(RoundedRectangle(cornerRadius: 6))
+
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(podcast.title)
+                                        .font(.body)
+                                        .lineLimit(1)
+                                    if !podcast.author.isEmpty {
+                                        Text(podcast.author)
+                                            .font(.subheadline)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                    }
+                                }
+                            }
+                        }
                     }
-                    .listRowSeparator(.hidden)
+                }
+
+                if !localEpisodes.isEmpty {
+                    Section("Episodes") {
+                        ForEach(localEpisodes, id: \.episode.id) { item in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(item.podcast.title)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Text(item.episode.title)
+                                    .font(.body)
+                                    .lineLimit(2)
+                                Text(item.episode.publishedDate, style: .date)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+
+                if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Section {
+                        Button {
+                            Task { await searchOnline() }
+                        } label: {
+                            HStack {
+                                Spacer()
+                                if isSearchingRemote {
+                                    ProgressView()
+                                        .padding(.trailing, 8)
+                                }
+                                Text("Search Online")
+                                Spacer()
+                            }
+                        }
+                        .disabled(isSearchingRemote)
+                    }
                 }
 
                 if let errorMessage {
@@ -27,48 +85,62 @@ struct SearchView: View {
                         .foregroundStyle(.red)
                 }
 
-                if !isLoading && results.isEmpty && !query.isEmpty {
-                    ContentUnavailableView.search(text: query)
-                }
-
-                ForEach(results) { result in
-                    SearchResultRow(result: result) {
-                        await subscribe(to: result)
+                if !remoteResults.isEmpty {
+                    Section("Online Results") {
+                        ForEach(remoteResults) { result in
+                            SearchResultRow(result: result) {
+                                await subscribe(to: result)
+                            }
+                        }
                     }
                 }
             }
             .listStyle(.plain)
             .navigationTitle("Search")
-            .searchable(text: $query, prompt: "Search podcasts")
+            .searchable(text: $query, prompt: "Search podcasts & episodes")
             .task(id: query) {
-                await performSearch()
+                await performLocalSearch()
             }
         }
     }
 
-    private func performSearch() async {
+    private func performLocalSearch() async {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            results = []
-            errorMessage = nil
+            localPodcasts = []
+            localEpisodes = []
             return
         }
 
-        try? await Task.sleep(for: .milliseconds(400))
+        try? await Task.sleep(for: .milliseconds(300))
         guard !Task.isCancelled else { return }
 
-        isLoading = true
+        do {
+            let results = try dataStore.searchLocal(query: trimmed)
+            localPodcasts = results.podcasts
+            localEpisodes = results.episodes
+        } catch {
+            localPodcasts = []
+            localEpisodes = []
+        }
+    }
+
+    private func searchOnline() async {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        isSearchingRemote = true
         errorMessage = nil
 
         do {
-            results = try await searchService.search(query: trimmed)
+            remoteResults = try await searchService.search(query: trimmed)
         } catch is CancellationError {
-            return
+            // cancelled
         } catch {
             errorMessage = error.localizedDescription
         }
 
-        isLoading = false
+        isSearchingRemote = false
     }
 
     private func subscribe(to result: PodcastSearchResult) async {
@@ -130,8 +202,4 @@ private struct SearchResultRow: View {
         }
         .buttonStyle(.plain)
     }
-}
-
-#Preview {
-    SearchView()
 }
