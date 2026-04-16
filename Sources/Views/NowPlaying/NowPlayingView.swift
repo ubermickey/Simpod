@@ -5,16 +5,14 @@ struct NowPlayingView: View {
     @Environment(AudioEngine.self) private var audioEngine
 
     var body: some View {
-        VStack(spacing: 32) {
-            Spacer()
-
-            // Artwork placeholder
+        VStack(spacing: 24) {
+            // Top third: Artwork (decorative, no tap targets)
             RoundedRectangle(cornerRadius: 12)
                 .fill(.quaternary)
                 .aspectRatio(1, contentMode: .fit)
                 .padding(.horizontal, 48)
 
-            // Episode info
+            // Middle third: Episode info + Progress
             VStack(spacing: 4) {
                 Text("Now Playing")
                     .font(.title3.bold())
@@ -23,7 +21,6 @@ struct NowPlayingView: View {
                     .foregroundStyle(.secondary)
             }
 
-            // Progress bar
             VStack(spacing: 4) {
                 ProgressView(value: audioEngine.currentPosition, total: max(audioEngine.duration, 1))
                 HStack {
@@ -37,7 +34,9 @@ struct NowPlayingView: View {
             }
             .padding(.horizontal, 32)
 
-            // Playback controls
+            Spacer()
+
+            // Bottom third: Playback controls (in thumb zone)
             HStack(spacing: 40) {
                 Button { try? audioEngine.skipBackward() } label: {
                     Image(systemName: "gobackward.15")
@@ -72,8 +71,7 @@ struct NowPlayingView: View {
                 ), in: 0.5...3.0, step: 0.1)
             }
             .padding(.horizontal, 32)
-
-            Spacer()
+            .padding(.bottom, 32)
         }
     }
 

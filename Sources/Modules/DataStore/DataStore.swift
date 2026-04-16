@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import GRDB
 import Observation
@@ -11,6 +12,7 @@ final class DataStore: @unchecked Sendable {
     var podcasts: [Podcast] = []
     var inbox: [EpisodeWithPodcast] = []
     var queue: [QueueItemWithEpisodeAndPodcast] = []
+    var reminders: [EpisodeWithPodcast] = []
 
     init(db: DatabaseQueue) throws {
         self.db = db
@@ -111,6 +113,7 @@ final class DataStore: @unchecked Sendable {
     // MARK: - Observations
 
     private var observationCancellables: [AnyDatabaseCancellable] = []
+    private var timerCancellable: AnyCancellable?
 
     private func startObservations() {
         let db = self.db
@@ -130,7 +133,11 @@ final class DataStore: @unchecked Sendable {
 
             let inboxCancellable = ValueObservation.tracking { db in
                 try Episode
-                    .filter(Episode.Columns.status == EpisodeStatus.inbox.rawValue)
+                    .filter(
+                        Episode.Columns.status == EpisodeStatus.inbox.rawValue
+                        || (Episode.Columns.status == EpisodeStatus.hidden.rawValue
+                            && Episode.Columns.hiddenUntil <= Date.now)
+                    )
                     .order(Episode.Columns.publishedDate.desc)
                     .including(required: Episode.podcast)
                     .asRequest(of: EpisodeWithPodcast.self)
@@ -154,11 +161,40 @@ final class DataStore: @unchecked Sendable {
                 self?.queue = items
             }
 
+            let remindersCancellable = ValueObservation.tracking { db in
+                try Episode
+                    .filter(
+                        Episode.Columns.status == EpisodeStatus.hidden.rawValue
+                        && Episode.Columns.hiddenUntil > Date.now
+                    )
+                    .order(Episode.Columns.hiddenUntil)
+                    .including(required: Episode.podcast)
+                    .asRequest(of: EpisodeWithPodcast.self)
+                    .fetchAll(db)
+            }.start(in: db) { error in
+                print("Reminders observation error: \(error)")
+            } onChange: { [weak self] episodes in
+                self?.reminders = episodes
+                try? self?.unhideExpiredEpisodes()
+            }
+
             self.observationCancellables = [
                 podcastCancellable,
                 inboxCancellable,
-                queueCancellable
+                queueCancellable,
+                remindersCancellable
             ]
+
+            // 60-second timer to sweep expired hidden episodes
+            self.timerCancellable = Timer.publish(every: 60, on: .main, in: .common)
+                .autoconnect()
+                .sink { [weak self] _ in
+                    guard let self else { return }
+                    try? self.unhideExpiredEpisodes()
+                }
+
+            // Startup cleanup: unhide any episodes that expired while the app was closed
+            try? self.unhideExpiredEpisodes()
         }
     }
 
@@ -300,6 +336,19 @@ final class DataStore: @unchecked Sendable {
         }
     }
 
+    // MARK: - Test Helpers
+
+    /// Directly set hiddenUntil for a hidden episode. For use in tests only.
+    func setHiddenUntilForTesting(episodeID: UUID, date: Date) throws {
+        try db.write { db in
+            if var episode = try Episode.fetchOne(db, id: episodeID) {
+                episode.hiddenUntil = date
+                episode.lastModified = .now
+                try episode.update(db)
+            }
+        }
+    }
+
     // MARK: - Sync Operations
 
     func fetchPodcast(byID id: UUID) throws -> Podcast? {
@@ -413,18 +462,18 @@ final class DataStore: @unchecked Sendable {
         }
     }
 
-    /// Hide an episode, optionally with a reminder date. Removes it from the queue if present.
-    func hideEpisode(_ episodeID: UUID, remindAt: Date?) throws {
+    /// Hide an episode for 24 hours. Removes it from the queue if present.
+    func hideEpisode(_ episodeID: UUID) throws {
         try db.write { db in
             // Remove from queue if present
             _ = try QueueItem
                 .filter(QueueItem.Columns.episodeID == episodeID)
                 .deleteAll(db)
 
-            // Set status to hidden and store reminder date
+            // Set status to hidden with a 24-hour reminder
             if var episode = try Episode.fetchOne(db, id: episodeID) {
                 episode.status = .hidden
-                episode.hiddenUntil = remindAt
+                episode.hiddenUntil = Date.now + 86400
                 episode.lastModified = .now
                 try episode.update(db)
             }
@@ -443,15 +492,16 @@ final class DataStore: @unchecked Sendable {
         }
     }
 
-    /// Auto-unhide all episodes whose reminder time has passed (hiddenUntil <= now).
+    /// Auto-unhide all episodes whose 24-hour hide period has passed (hiddenUntil <= now).
     func unhideExpiredEpisodes() throws {
         try db.write { db in
             let now = Date.now
             let episodes = try Episode
-                .filter(Episode.Columns.status == EpisodeStatus.hidden.rawValue)
+                .filter(Episode.Columns.status == EpisodeStatus.hidden.rawValue
+                    && Episode.Columns.hiddenUntil <= now)
                 .fetchAll(db)
 
-            for var episode in episodes where episode.hiddenUntil != nil && episode.hiddenUntil! <= now {
+            for var episode in episodes {
                 episode.status = .inbox
                 episode.hiddenUntil = nil
                 episode.lastModified = .now

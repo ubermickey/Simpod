@@ -83,7 +83,7 @@ PROVIDES:
 - `moveToTop(episodeID:)`: Reorder queue item to first position
 - `moveToBottom(episodeID:)`: Reorder queue item to last position
 - `addToQueueAtTop(episodeID:)`: Add episode from inbox to top of queue
-- `hideEpisode(_:remindAt:)`: Set status to hidden, store reminder date, remove from queue
+- `hideEpisode(_:)`: Hide for 24 hours (fixed duration), remove from queue
 - `unhideEpisode(_:)`: Return hidden episode to inbox, clear reminder
 - `unhideExpiredEpisodes()`: Auto-unhide episodes past their reminder date
 

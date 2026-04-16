@@ -1,88 +1,50 @@
 import SwiftUI
 
-/// The context from which the drawer was opened — drives which actions are shown.
+/// The context from which the action bar was opened — drives which actions are shown.
 enum EpisodeContext {
     case inbox
     case queue
 }
 
-/// A bottom-sheet drawer presenting context-appropriate actions for a single episode.
-/// Present with `.sheet` and auto-dismisses after every action.
+/// An inline action bar presenting context-appropriate actions for a single episode.
+/// Embed directly in the parent view; the parent provides layout context.
 struct EpisodeOptionsDrawer: View {
     let episode: Episode
     let podcastTitle: String
     let context: EpisodeContext
+    var onCollapse: () -> Void
+    var onShowInfo: () -> Void
 
-    @Environment(\.dismiss) private var dismiss
     @Environment(DataStore.self) private var dataStore
     @Environment(AudioEngine.self) private var audioEngine
     @Environment(DownloadManager.self) private var downloadManager
 
-    @State private var showHideOptions = false
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            // MARK: Header
-            VStack(alignment: .leading, spacing: 4) {
-                Text(episode.title)
-                    .font(.headline)
-                    .lineLimit(2)
-                Text(podcastTitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+        HStack(spacing: 12) {
+            switch context {
+            case .inbox:
+                inboxActions
+            case .queue:
+                queueActions
             }
-            .padding(.horizontal)
-            .padding(.top, 8)
-
-            Divider()
-
-            // MARK: Action Buttons
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 24) {
-                    switch context {
-                    case .inbox:
-                        inboxActions
-                    case .queue:
-                        queueActions
-                    }
-                }
-                .padding(.horizontal)
-            }
-
-            Spacer()
         }
-        .presentationDetents([.height(280)])
-        .presentationDragIndicator(.visible)
-        .confirmationDialog("Remind me?", isPresented: $showHideOptions, titleVisibility: .visible) {
-            Button("In 1 Hour") {
-                try? dataStore.hideEpisode(episode.id, remindAt: Date.now + 3600)
-                dismiss()
-            }
-            Button("Tomorrow Morning") {
-                try? dataStore.hideEpisode(episode.id, remindAt: tomorrowMorning)
-                dismiss()
-            }
-            Button("Next Week") {
-                try? dataStore.hideEpisode(episode.id, remindAt: Date.now + 604800)
-                dismiss()
-            }
-            Button("Hide Indefinitely") {
-                try? dataStore.hideEpisode(episode.id, remindAt: nil)
-                dismiss()
-            }
-            Button("Cancel", role: .cancel) {}
-        }
+        .padding(.vertical, 8)
+        .background(Color(.systemGray6))
+        .cornerRadius(8)
     }
 
     // MARK: - Inbox Actions
+    // Order: Queue | Play Next | Play Now | Info | Archive
 
     @ViewBuilder
     private var inboxActions: some View {
         actionButton("text.line.last.and.arrowhead.forward", "Queue") {
             try? dataStore.triageToQueue(episodeID: episode.id)
+            onCollapse()
         }
         actionButton("text.line.first.and.arrowhead.forward", "Play Next") {
             try? dataStore.addToQueueAtTop(episodeID: episode.id)
+            onCollapse()
         }
         actionButton("play.fill", "Play Now") {
             playEpisode(episode)
@@ -90,12 +52,17 @@ struct EpisodeOptionsDrawer: View {
         if episode.localFilePath == nil {
             downloadButton
         }
+        actionButton("info.circle", "Info") {
+            onShowInfo()
+        }
         actionButton("archivebox", "Archive") {
             try? dataStore.triageToSkip(episodeID: episode.id)
+            onCollapse()
         }
     }
 
     // MARK: - Queue Actions
+    // Order: Play Now | Play Next | Play Last | Hide | Info | Remove
 
     @ViewBuilder
     private var queueActions: some View {
@@ -108,18 +75,25 @@ struct EpisodeOptionsDrawer: View {
         actionButton("text.line.last.and.arrowhead.forward", "Play Last") {
             try? dataStore.moveToBottom(episodeID: episode.id)
         }
-        hideButton
+        actionButton("eye.slash", "Hide") {
+            try? dataStore.hideEpisode(episode.id)
+            onCollapse()
+        }
+        actionButton("info.circle", "Info") {
+            onShowInfo()
+        }
         if episode.localFilePath == nil {
             downloadButton
         }
         actionButton("xmark.circle", "Remove") {
             try? dataStore.removeFromQueue(episodeID: episode.id)
+            onCollapse()
         }
     }
 
     // MARK: - Special Buttons
 
-    /// Download button — wraps async download in a Task; does not auto-dismiss until done.
+    /// Download button — wraps async download in a Task; does not collapse until done.
     private var downloadButton: some View {
         Button {
             let ep = episode
@@ -131,29 +105,12 @@ struct EpisodeOptionsDrawer: View {
                     print("Download error: \(error)")
                 }
             }
-            dismiss()
         } label: {
             VStack(spacing: 6) {
                 Image(systemName: "arrow.down.circle")
                     .font(.title2)
-                    .frame(width: 44, height: 44)
+                    .frame(width: 48, height: 48)
                 Text("Download")
-                    .font(.caption2)
-            }
-        }
-        .buttonStyle(.plain)
-    }
-
-    /// Hide button — triggers the reminder confirmation dialog instead of dismissing immediately.
-    private var hideButton: some View {
-        Button {
-            showHideOptions = true
-        } label: {
-            VStack(spacing: 6) {
-                Image(systemName: "eye.slash")
-                    .font(.title2)
-                    .frame(width: 44, height: 44)
-                Text("Hide")
                     .font(.caption2)
             }
         }
@@ -162,16 +119,15 @@ struct EpisodeOptionsDrawer: View {
 
     // MARK: - Helpers
 
-    /// Generic icon-above-label action button. Auto-dismisses after action.
+    /// Generic icon-above-label action button.
     private func actionButton(_ symbol: String, _ label: String, action: @escaping () -> Void) -> some View {
         Button {
             action()
-            dismiss()
         } label: {
             VStack(spacing: 6) {
                 Image(systemName: symbol)
                     .font(.title2)
-                    .frame(width: 44, height: 44)
+                    .frame(width: 48, height: 48)
                 Text(label)
                     .font(.caption2)
             }
@@ -187,15 +143,5 @@ struct EpisodeOptionsDrawer: View {
         } else if let remoteURL = URL(string: ep.audioURL) {
             audioEngine.playStream(url: remoteURL, episodeID: ep.id, startPosition: ep.playbackPosition)
         }
-    }
-
-    /// Tomorrow at 08:00 in the user's local calendar.
-    private var tomorrowMorning: Date {
-        var components = Calendar.current.dateComponents([.year, .month, .day], from: Date.now)
-        components.day = (components.day ?? 0) + 1
-        components.hour = 8
-        components.minute = 0
-        components.second = 0
-        return Calendar.current.date(from: components) ?? Date.now + 86400
     }
 }

@@ -4,7 +4,8 @@ import SwiftUI
 struct InboxView: View {
     @Environment(DataStore.self) private var dataStore
     @Environment(AudioEngine.self) private var audioEngine
-    @State private var selectedEpisode: EpisodeWithPodcast?
+    @State private var expandedEpisodeID: UUID?
+    @State private var showInfoForEpisode: EpisodeWithPodcast?
 
     var body: some View {
         NavigationStack {
@@ -17,43 +18,72 @@ struct InboxView: View {
                     )
                 } else {
                     ForEach(dataStore.inbox, id: \.episode.id) { item in
-                        InboxEpisodeRow(item: item)
-                            .onTapGesture { selectedEpisode = item }
-                            .swipeActions(edge: .trailing) {
-                                Button {
-                                    try? dataStore.triageToQueue(episodeID: item.episode.id)
-                                } label: {
-                                    Label("Queue", systemImage: "plus")
+                        VStack(spacing: 0) {
+                            InboxEpisodeRow(item: item)
+                                .onTapGesture {
+                                    withAnimation(.easeInOut(duration: 0.25)) {
+                                        if expandedEpisodeID == item.episode.id {
+                                            expandedEpisodeID = nil
+                                        } else {
+                                            expandedEpisodeID = item.episode.id
+                                        }
+                                    }
                                 }
-                                .tint(.blue)
+
+                            if expandedEpisodeID == item.episode.id {
+                                EpisodeOptionsDrawer(
+                                    episode: item.episode,
+                                    podcastTitle: item.podcast.title,
+                                    context: .inbox,
+                                    onCollapse: {
+                                        withAnimation(.easeInOut(duration: 0.25)) {
+                                            expandedEpisodeID = nil
+                                        }
+                                    },
+                                    onShowInfo: {
+                                        showInfoForEpisode = item
+                                    }
+                                )
+                                .transition(.opacity.combined(with: .move(edge: .top)))
                             }
-                            .swipeActions(edge: .leading) {
-                                Button {
-                                    try? dataStore.triageToSkip(episodeID: item.episode.id)
-                                } label: {
-                                    Label("Archive", systemImage: "archivebox")
-                                }
-                                .tint(.orange)
+                        }
+                        .swipeActions(edge: .trailing) {
+                            Button {
+                                try? dataStore.triageToQueue(episodeID: item.episode.id)
+                            } label: {
+                                Label("Queue", systemImage: "plus")
                             }
+                            .tint(.blue)
+                        }
+                        .swipeActions(edge: .leading) {
+                            Button {
+                                try? dataStore.triageToSkip(episodeID: item.episode.id)
+                            } label: {
+                                Label("Archive", systemImage: "archivebox")
+                            }
+                            .tint(.orange)
+                        }
                     }
+                    .animation(.easeInOut(duration: 0.25), value: expandedEpisodeID)
                 }
             }
             .navigationTitle("Inbox")
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .bottomBar) {
+                    Spacer()
                     NavigationLink {
                         AddPodcastView()
                     } label: {
-                        Image(systemName: "plus")
+                        Image(systemName: "plus.circle.fill")
+                            .font(.title2)
                     }
+                    Spacer()
                 }
             }
-            .sheet(item: $selectedEpisode) {
-                EpisodeOptionsDrawer(
-                    episode: $0.episode,
-                    podcastTitle: $0.podcast.title,
-                    context: .inbox
-                )
+            .sheet(item: $showInfoForEpisode) { item in
+                NavigationStack {
+                    EpisodeInfoView(episode: item.episode, podcastTitle: item.podcast.title)
+                }
             }
         }
     }

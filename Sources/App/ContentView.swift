@@ -19,6 +19,12 @@ struct ContentView: View {
                         Label("Queue", systemImage: "list.bullet")
                     }
 
+                RemindersView()
+                    .tabItem {
+                        Label("Reminders", systemImage: "clock.arrow.circlepath")
+                    }
+                    .badge(dataStore.reminders.count)
+
                 SearchView()
                     .tabItem {
                         Label("Search", systemImage: "magnifyingglass")
@@ -50,7 +56,9 @@ struct MiniPlayerView: View {
 
     var body: some View {
         HStack(spacing: 16) {
-            // Controls cluster (LEFT side for left-hand usage)
+            Spacer()
+
+            // Controls cluster (CENTERED for both-hand accessibility)
             HStack(spacing: 12) {
                 Button { try? audioEngine.skipBackward() } label: {
                     Image(systemName: "gobackward.15")
@@ -84,8 +92,10 @@ struct MiniPlayerView: View {
             }
             .foregroundStyle(.primary)
 
-            // Episode info (fills remaining space)
-            VStack(alignment: .leading) {
+            Spacer()
+
+            // Episode info (trailing)
+            VStack(alignment: .trailing) {
                 Text(currentEpisodeTitle)
                     .font(.caption.bold())
                     .lineLimit(1)
@@ -94,8 +104,6 @@ struct MiniPlayerView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
-
-            Spacer()
         }
         .padding(.horizontal)
         .padding(.vertical, 8)

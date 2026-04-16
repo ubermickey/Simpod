@@ -134,35 +134,18 @@ struct QueueManagementTests {
         let queueBefore = try store.fetchQueue()
         #expect(queueBefore.count == 1)
 
-        // Hide with no reminder
-        try store.hideEpisode(ep1.id, remindAt: nil)
+        // Hide for 24 hours
+        try store.hideEpisode(ep1.id)
 
         // Should be removed from queue
         let queueAfter = try store.fetchQueue()
         #expect(queueAfter.isEmpty)
 
-        // Status should be .hidden
+        // Status should be .hidden with hiddenUntil ~24h from now
         let fetched = try store.fetchEpisode(byID: ep1.id)
         #expect(fetched?.status == .hidden)
-        #expect(fetched?.hiddenUntil == nil)
-    }
-
-    // MARK: - 5. hideEpisode with reminder sets hiddenUntil
-
-    @Test func testHideEpisodeWithReminder() throws {
-        let store = try makeStore()
-        let podcast = try savePodcast(to: store)
-
-        let ep1 = try saveEpisode(to: store, podcastID: podcast.id, guid: "ep1")
-        let futureDate = Date(timeIntervalSinceNow: 86400) // tomorrow
-
-        try store.hideEpisode(ep1.id, remindAt: futureDate)
-
-        let fetched = try store.fetchEpisode(byID: ep1.id)
-        #expect(fetched?.status == .hidden)
-        // Compare within 1-second tolerance to avoid floating-point drift
         let storedInterval = fetched?.hiddenUntil?.timeIntervalSinceReferenceDate ?? 0
-        let expectedInterval = futureDate.timeIntervalSinceReferenceDate
+        let expectedInterval = Date(timeIntervalSinceNow: 86400).timeIntervalSinceReferenceDate
         #expect(abs(storedInterval - expectedInterval) < 1.0)
     }
 
@@ -175,7 +158,7 @@ struct QueueManagementTests {
         let ep1 = try saveEpisode(to: store, podcastID: podcast.id, guid: "ep1")
 
         // Hide it first
-        try store.hideEpisode(ep1.id, remindAt: Date(timeIntervalSinceNow: 3600))
+        try store.hideEpisode(ep1.id)
 
         let hiddenState = try store.fetchEpisode(byID: ep1.id)
         #expect(hiddenState?.status == .hidden)
@@ -197,11 +180,12 @@ struct QueueManagementTests {
         let epPast = try saveEpisode(to: store, podcastID: podcast.id, guid: "ep-past")
         let epFuture = try saveEpisode(to: store, podcastID: podcast.id, guid: "ep-future")
 
-        // epPast: reminder in the past (already expired)
-        try store.hideEpisode(epPast.id, remindAt: Date(timeIntervalSinceNow: -3600))
+        // epPast: hide first (sets 24h), then manually backdate hiddenUntil to simulate expiry
+        try store.hideEpisode(epPast.id)
+        try store.setHiddenUntilForTesting(episodeID: epPast.id, date: Date(timeIntervalSinceNow: -3600))
 
         // epFuture: reminder in the future (should not be unhidden)
-        try store.hideEpisode(epFuture.id, remindAt: Date(timeIntervalSinceNow: 86400))
+        try store.hideEpisode(epFuture.id)
 
         // Run the auto-unhide sweep
         try store.unhideExpiredEpisodes()
@@ -218,27 +202,4 @@ struct QueueManagementTests {
         #expect(futureFetched?.hiddenUntil != nil)
     }
 
-    // MARK: - 8. unhideExpiredEpisodes does not touch indefinitely hidden episodes
-
-    @Test func testUnhideDoesNotTouchIndefiniteHide() throws {
-        let store = try makeStore()
-        let podcast = try savePodcast(to: store)
-
-        let ep1 = try saveEpisode(to: store, podcastID: podcast.id, guid: "ep1")
-
-        // Hide with no reminder date (indefinite hide)
-        try store.hideEpisode(ep1.id, remindAt: nil)
-
-        let hiddenState = try store.fetchEpisode(byID: ep1.id)
-        #expect(hiddenState?.status == .hidden)
-        #expect(hiddenState?.hiddenUntil == nil)
-
-        // Run the auto-unhide sweep
-        try store.unhideExpiredEpisodes()
-
-        // Should still be hidden — nil hiddenUntil means "hide indefinitely"
-        let after = try store.fetchEpisode(byID: ep1.id)
-        #expect(after?.status == .hidden)
-        #expect(after?.hiddenUntil == nil)
-    }
 }

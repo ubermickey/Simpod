@@ -3,7 +3,8 @@ import SwiftUI
 /// Ordered playback queue. Episodes triaged from Inbox land here.
 struct QueueView: View {
     @Environment(DataStore.self) private var dataStore
-    @State private var selectedItem: QueueItemWithEpisodeAndPodcast?
+    @State private var expandedEpisodeID: UUID?
+    @State private var showInfoForEpisode: QueueItemWithEpisodeAndPodcast?
 
     var body: some View {
         NavigationStack {
@@ -16,10 +17,35 @@ struct QueueView: View {
                     )
                 } else {
                     ForEach(dataStore.queue, id: \.queueItem.id) { item in
-                        QueueEpisodeRow(item: item)
-                            .onTapGesture {
-                                selectedItem = item
+                        VStack(spacing: 0) {
+                            QueueEpisodeRow(item: item)
+                                .onTapGesture {
+                                    withAnimation(.easeInOut(duration: 0.25)) {
+                                        if expandedEpisodeID == item.episode.id {
+                                            expandedEpisodeID = nil
+                                        } else {
+                                            expandedEpisodeID = item.episode.id
+                                        }
+                                    }
+                                }
+
+                            if expandedEpisodeID == item.episode.id {
+                                EpisodeOptionsDrawer(
+                                    episode: item.episode,
+                                    podcastTitle: item.podcast.title,
+                                    context: .queue,
+                                    onCollapse: {
+                                        withAnimation(.easeInOut(duration: 0.25)) {
+                                            expandedEpisodeID = nil
+                                        }
+                                    },
+                                    onShowInfo: {
+                                        showInfoForEpisode = item
+                                    }
+                                )
+                                .transition(.opacity.combined(with: .move(edge: .top)))
                             }
+                        }
                     }
                     .onMove { from, to in
                         moveItems(from: from, to: to)
@@ -27,15 +53,14 @@ struct QueueView: View {
                     .onDelete { offsets in
                         deleteItems(at: offsets)
                     }
+                    .animation(.easeInOut(duration: 0.25), value: expandedEpisodeID)
                 }
             }
             .navigationTitle("Queue")
-            .sheet(item: $selectedItem) {
-                EpisodeOptionsDrawer(
-                    episode: $0.episode,
-                    podcastTitle: $0.podcast.title,
-                    context: .queue
-                )
+            .sheet(item: $showInfoForEpisode) { item in
+                NavigationStack {
+                    EpisodeInfoView(episode: item.episode, podcastTitle: item.podcast.title)
+                }
             }
         }
     }
