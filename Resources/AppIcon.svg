@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!--
+    Simpod App Icon — Bauhaus-inspired
+    Palette: Navy #1A1A2E, Red #D64045, Yellow #F5CB5C, Blue #3A86A8
+    Three elements only: ring (broadcast), circle (voice), triangle (play)
+  -->
+
+  <!-- Background: Deep navy -->
+  <rect width="1024" height="1024" fill="#1A1A2E"/>
+
+  <!-- Outer ring: Bauhaus blue — the broadcast signal, the airwaves -->
+  <circle cx="512" cy="512" r="360" fill="none" stroke="#3A86A8" stroke-width="32"/>
+
+  <!-- Inner circle: Bauhaus red — the voice, the podcast, the source -->
+  <circle cx="512" cy="512" r="250" fill="#D64045"/>
+
+  <!-- Play triangle: Bauhaus yellow — the action, the player -->
+  <!-- Optically centered: shifted 16px right to compensate for triangle visual weight -->
+  <polygon points="468,372 468,652 688,512" fill="#F5CB5C"/>
+</svg>

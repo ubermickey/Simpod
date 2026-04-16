@@ -109,10 +109,13 @@ final class SyncEngine: @unchecked Sendable {
     // MARK: - Private Setup
 
     private func setupEngine() {
-        // CKSyncEngine crashes at runtime if the CloudKit entitlement is missing.
-        // Check for iCloud availability before attempting to create the engine.
-        guard FileManager.default.ubiquityIdentityToken != nil else {
-            print("[SyncEngine] iCloud unavailable — skipping CKSyncEngine setup")
+        // CloudKit entitlements are disabled (personal dev team doesn't support iCloud).
+        // CKSyncEngine, CKContainer, and even FileManager ubiquity APIs can trap
+        // at runtime without the entitlement on physical devices.
+        // To re-enable: uncomment entitlements in project.yml, then set this to true.
+        let cloudKitEnabled = false
+        guard cloudKitEnabled else {
+            print("[SyncEngine] CloudKit disabled — skipping CKSyncEngine setup")
             return
         }
 

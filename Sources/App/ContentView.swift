@@ -45,38 +45,107 @@ struct ContentView: View {
 /// Persistent mini player shown above the tab bar during playback.
 struct MiniPlayerView: View {
     @Environment(AudioEngine.self) private var audioEngine
+    @Environment(DataStore.self) private var dataStore
     @Binding var showNowPlaying: Bool
 
     var body: some View {
-        HStack {
-            RoundedRectangle(cornerRadius: 4)
-                .fill(.quaternary)
-                .frame(width: 40, height: 40)
+        HStack(spacing: 16) {
+            // Controls cluster (LEFT side for left-hand usage)
+            HStack(spacing: 12) {
+                Button { try? audioEngine.skipBackward() } label: {
+                    Image(systemName: "gobackward.15")
+                        .font(.body)
+                }
+                .buttonStyle(.borderless)
 
+                Button {
+                    switch audioEngine.playbackState {
+                    case .playing: audioEngine.pause()
+                    case .paused: audioEngine.resume()
+                    default: break
+                    }
+                } label: {
+                    Image(systemName: audioEngine.playbackState == .playing ? "pause.fill" : "play.fill")
+                        .font(.title3)
+                }
+                .buttonStyle(.borderless)
+
+                Button { try? audioEngine.skipForward() } label: {
+                    Image(systemName: "goforward.30")
+                        .font(.body)
+                }
+                .buttonStyle(.borderless)
+
+                Button { playNextInQueue() } label: {
+                    Image(systemName: "forward.fill")
+                        .font(.body)
+                }
+                .buttonStyle(.borderless)
+            }
+            .foregroundStyle(.primary)
+
+            // Episode info (fills remaining space)
             VStack(alignment: .leading) {
-                Text("Now Playing")
+                Text(currentEpisodeTitle)
                     .font(.caption.bold())
-                Text(audioEngine.playbackState.rawValue.capitalized)
+                    .lineLimit(1)
+                Text(currentPodcastTitle)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
 
             Spacer()
-
-            Button {
-                switch audioEngine.playbackState {
-                case .playing: audioEngine.pause()
-                case .paused: audioEngine.resume()
-                default: break
-                }
-            } label: {
-                Image(systemName: audioEngine.playbackState == .playing ? "pause.fill" : "play.fill")
-                    .font(.title3)
-            }
         }
         .padding(.horizontal)
         .padding(.vertical, 8)
         .background(.ultraThinMaterial)
         .onTapGesture { showNowPlaying = true }
+    }
+
+    private var currentEpisodeTitle: String {
+        guard let episodeID = audioEngine.currentEpisodeID else { return "Not Playing" }
+        if let found = dataStore.inbox.first(where: { $0.episode.id == episodeID }) {
+            return found.episode.title
+        }
+        if let found = dataStore.queue.first(where: { $0.episode.id == episodeID }) {
+            return found.episode.title
+        }
+        return "Now Playing"
+    }
+
+    private var currentPodcastTitle: String {
+        guard let episodeID = audioEngine.currentEpisodeID else { return "" }
+        if let found = dataStore.inbox.first(where: { $0.episode.id == episodeID }) {
+            return found.podcast.title
+        }
+        if let found = dataStore.queue.first(where: { $0.episode.id == episodeID }) {
+            return found.podcast.title
+        }
+        return ""
+    }
+
+    private func playNextInQueue() {
+        let queue = dataStore.queue
+        guard !queue.isEmpty else { return }
+
+        if let currentID = audioEngine.currentEpisodeID,
+           let currentIndex = queue.firstIndex(where: { $0.episode.id == currentID }),
+           currentIndex + 1 < queue.count {
+            let nextEpisode = queue[currentIndex + 1].episode
+            playEpisode(nextEpisode)
+        } else {
+            let firstEpisode = queue[0].episode
+            playEpisode(firstEpisode)
+        }
+    }
+
+    private func playEpisode(_ episode: Episode) {
+        if let localPath = episode.localFilePath,
+           let fileURL = URL(string: localPath) ?? URL(fileURLWithPath: localPath) as URL? {
+            try? audioEngine.play(fileURL: fileURL, episodeID: episode.id, startPosition: episode.playbackPosition)
+        } else if let remoteURL = URL(string: episode.audioURL) {
+            audioEngine.playStream(url: remoteURL, episodeID: episode.id, startPosition: episode.playbackPosition)
+        }
     }
 }

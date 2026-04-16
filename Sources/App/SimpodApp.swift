@@ -24,7 +24,12 @@ struct SimpodApp: App {
                     ) { _ in
                         container.backgroundRefresh.scheduleRefresh()
                     }
-                    .onAppear { logger.info("ContentView appeared") }
+                    .onAppear {
+                        logger.info("ContentView appeared")
+                        #if DEBUG
+                        UIApplication.shared.isIdleTimerDisabled = true
+                        #endif
+                    }
             } else if let loadError {
                 Text("Failed to start: \(loadError)")
                     .foregroundStyle(.red)

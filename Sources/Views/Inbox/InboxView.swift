@@ -4,6 +4,7 @@ import SwiftUI
 struct InboxView: View {
     @Environment(DataStore.self) private var dataStore
     @Environment(AudioEngine.self) private var audioEngine
+    @State private var selectedEpisode: EpisodeWithPodcast?
 
     var body: some View {
         NavigationStack {
@@ -15,11 +16,12 @@ struct InboxView: View {
                         description: Text("Subscribe to a podcast to see new episodes here.")
                     )
                 } else {
-                    ForEach(dataStore.inbox) { episode in
-                        InboxEpisodeRow(episode: episode)
+                    ForEach(dataStore.inbox, id: \.episode.id) { item in
+                        InboxEpisodeRow(item: item)
+                            .onTapGesture { selectedEpisode = item }
                             .swipeActions(edge: .trailing) {
                                 Button {
-                                    try? dataStore.triageToQueue(episodeID: episode.id)
+                                    try? dataStore.triageToQueue(episodeID: item.episode.id)
                                 } label: {
                                     Label("Queue", systemImage: "plus")
                                 }
@@ -27,9 +29,9 @@ struct InboxView: View {
                             }
                             .swipeActions(edge: .leading) {
                                 Button {
-                                    try? dataStore.triageToSkip(episodeID: episode.id)
+                                    try? dataStore.triageToSkip(episodeID: item.episode.id)
                                 } label: {
-                                    Label("Skip", systemImage: "xmark")
+                                    Label("Archive", systemImage: "archivebox")
                                 }
                                 .tint(.orange)
                             }
@@ -46,26 +48,36 @@ struct InboxView: View {
                     }
                 }
             }
+            .sheet(item: $selectedEpisode) {
+                EpisodeOptionsDrawer(
+                    episode: $0.episode,
+                    podcastTitle: $0.podcast.title,
+                    context: .inbox
+                )
+            }
         }
     }
 }
 
 struct InboxEpisodeRow: View {
-    let episode: Episode
+    let item: EpisodeWithPodcast
     @Environment(DownloadManager.self) private var downloadManager
     @Environment(DataStore.self) private var dataStore
 
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
-                Text(episode.title)
+                Text(item.podcast.title)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(item.episode.title)
                     .font(.headline)
                     .lineLimit(2)
                 HStack {
-                    Text(episode.publishedDate, style: .date)
-                    if episode.duration > 0 {
+                    Text(item.episode.publishedDate, style: .date)
+                    if item.episode.duration > 0 {
                         Text("·")
-                        Text(formatDuration(episode.duration))
+                        Text(formatDuration(item.episode.duration))
                     }
                 }
                 .font(.caption)
@@ -81,16 +93,16 @@ struct InboxEpisodeRow: View {
 
     @ViewBuilder
     private var downloadControl: some View {
-        if episode.localFilePath != nil {
+        if item.episode.localFilePath != nil {
             Image(systemName: "checkmark.circle.fill")
                 .foregroundStyle(.green)
                 .imageScale(.large)
-        } else if let progress = downloadManager.activeDownloads[episode.id] {
+        } else if let progress = downloadManager.activeDownloads[item.episode.id] {
             ProgressView(value: progress)
                 .frame(width: 32)
         } else {
             Button {
-                let ep = episode
+                let ep = item.episode
                 Task {
                     do {
                         let url = try await downloadManager.download(episode: ep)

@@ -16,6 +16,7 @@ struct Episode: Identifiable, Codable, Sendable, FetchableRecord, PersistableRec
     var status: EpisodeStatus
     var downloadProgress: Double
     var lastModified: Date
+    var hiddenUntil: Date?
 
     static let podcast = belongsTo(Podcast.self)
 
@@ -32,7 +33,8 @@ struct Episode: Identifiable, Codable, Sendable, FetchableRecord, PersistableRec
         episodeDescription: String = "",
         status: EpisodeStatus = .inbox,
         downloadProgress: Double = 0,
-        lastModified: Date = .now
+        lastModified: Date = .now,
+        hiddenUntil: Date? = nil
     ) {
         self.id = id
         self.podcastID = podcastID
@@ -47,6 +49,7 @@ struct Episode: Identifiable, Codable, Sendable, FetchableRecord, PersistableRec
         self.status = status
         self.downloadProgress = downloadProgress
         self.lastModified = lastModified
+        self.hiddenUntil = hiddenUntil
     }
 
     enum Columns {
@@ -57,6 +60,7 @@ struct Episode: Identifiable, Codable, Sendable, FetchableRecord, PersistableRec
         static let playbackPosition = Column(CodingKeys.playbackPosition)
         static let publishedDate = Column(CodingKeys.publishedDate)
         static let lastModified = Column(CodingKeys.lastModified)
+        static let hiddenUntil = Column(CodingKeys.hiddenUntil)
     }
 }
 
@@ -66,4 +70,5 @@ enum EpisodeStatus: String, Codable, Sendable {
     case skipped
     case playing
     case played
+    case hidden
 }

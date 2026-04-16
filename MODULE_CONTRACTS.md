@@ -80,6 +80,12 @@ PROVIDES:
 - `fetchQueue() -> [QueueItem]`: Ordered queue
 - `fetchInbox() -> [Episode]`: Unread/untriaged episodes
 - `applyTag(_ tag: Tag, to: Episode)`: Tag an episode
+- `moveToTop(episodeID:)`: Reorder queue item to first position
+- `moveToBottom(episodeID:)`: Reorder queue item to last position
+- `addToQueueAtTop(episodeID:)`: Add episode from inbox to top of queue
+- `hideEpisode(_:remindAt:)`: Set status to hidden, store reminder date, remove from queue
+- `unhideEpisode(_:)`: Return hidden episode to inbox, clear reminder
+- `unhideExpiredEpisodes()`: Auto-unhide episodes past their reminder date
 
 REQUIRES:
 - Persistence framework (SwiftData or Core Data — Council decision)
@@ -145,6 +151,6 @@ STATUS: DRAFT
 | FeedEngine | subscribe, refresh, refreshAll, importOPML | URLSession, RSS lib, DataStore | No crash on malformed RSS; idempotent | DRAFT |
 | AudioEngine | play, pause, seek, speed, state | AVFoundation, Episode URLs | Never silent fail; position persisted | DRAFT |
 | DownloadManager | download, cancel, progress, delete | URLSession bg, file storage, DataStore | Bg downloads; resumable; queryable size | DRAFT |
-| DataStore | CRUD for all entities, tags | Persistence framework, CloudKit hook | Reads never block; queue consistent | DRAFT |
+| DataStore | CRUD, tags, moveToTop/Bottom, hide/unhide, addToQueueAtTop | GRDB, CloudKit hook | Reads never block; queue consistent | DRAFT |
 | SyncEngine | syncNow, syncState, lastSync | CloudKit/CKSyncEngine, DataStore | No overwrite newer; auto-retry; restore | DRAFT |
 | InboxManager | triage, triageAll, inboxCount | DataStore | All episodes start in inbox; one-tap | DRAFT |

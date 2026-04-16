@@ -9,8 +9,8 @@ final class DataStore: @unchecked Sendable {
     private let db: DatabaseQueue
 
     var podcasts: [Podcast] = []
-    var inbox: [Episode] = []
-    var queue: [QueueItemWithEpisode] = []
+    var inbox: [EpisodeWithPodcast] = []
+    var queue: [QueueItemWithEpisodeAndPodcast] = []
 
     init(db: DatabaseQueue) throws {
         self.db = db
@@ -99,6 +99,12 @@ final class DataStore: @unchecked Sendable {
             }
         }
 
+        migrator.registerMigration("v2-hidden-until") { db in
+            try db.alter(table: "episode") { t in
+                t.add(column: "hiddenUntil", .datetime)
+            }
+        }
+
         try migrator.migrate(db)
     }
 
@@ -126,6 +132,8 @@ final class DataStore: @unchecked Sendable {
                 try Episode
                     .filter(Episode.Columns.status == EpisodeStatus.inbox.rawValue)
                     .order(Episode.Columns.publishedDate.desc)
+                    .including(required: Episode.podcast)
+                    .asRequest(of: EpisodeWithPodcast.self)
                     .fetchAll(db)
             }.start(in: db) { error in
                 print("Inbox observation error: \(error)")
@@ -136,8 +144,9 @@ final class DataStore: @unchecked Sendable {
             let queueCancellable = ValueObservation.tracking { db in
                 try QueueItem
                     .order(QueueItem.Columns.order)
-                    .including(required: QueueItem.episode)
-                    .asRequest(of: QueueItemWithEpisode.self)
+                    .including(required: QueueItem.episode
+                        .including(required: Episode.podcast))
+                    .asRequest(of: QueueItemWithEpisodeAndPodcast.self)
                     .fetchAll(db)
             }.start(in: db) { error in
                 print("Queue observation error: \(error)")
@@ -280,12 +289,13 @@ final class DataStore: @unchecked Sendable {
 
     // MARK: - Direct Queries (for tests and sync)
 
-    func fetchQueue() throws -> [QueueItemWithEpisode] {
+    func fetchQueue() throws -> [QueueItemWithEpisodeAndPodcast] {
         try db.read { db in
             try QueueItem
                 .order(QueueItem.Columns.order)
-                .including(required: QueueItem.episode)
-                .asRequest(of: QueueItemWithEpisode.self)
+                .including(required: QueueItem.episode
+                    .including(required: Episode.podcast))
+                .asRequest(of: QueueItemWithEpisodeAndPodcast.self)
                 .fetchAll(db)
         }
     }
@@ -333,10 +343,141 @@ final class DataStore: @unchecked Sendable {
     ) throws where T.ID: DatabaseValueConvertible {
         try db.write { db in _ = try T.deleteOne(db, id: id) }
     }
+
+    // MARK: - Extended Queue Operations
+
+    /// Move an existing queue item to position 0 (play next), normalizing all orders.
+    func moveToTop(episodeID: UUID) throws {
+        try db.write { db in
+            var items = try QueueItem
+                .order(QueueItem.Columns.order)
+                .fetchAll(db)
+
+            guard let idx = items.firstIndex(where: { $0.episodeID == episodeID }) else { return }
+
+            let item = items.remove(at: idx)
+            items.insert(item, at: 0)
+
+            for (index, var qi) in items.enumerated() {
+                qi.order = index
+                qi.lastModified = .now
+                try qi.update(db)
+            }
+        }
+    }
+
+    /// Move an existing queue item to the last position, normalizing all orders.
+    func moveToBottom(episodeID: UUID) throws {
+        try db.write { db in
+            var items = try QueueItem
+                .order(QueueItem.Columns.order)
+                .fetchAll(db)
+
+            guard let idx = items.firstIndex(where: { $0.episodeID == episodeID }) else { return }
+
+            let item = items.remove(at: idx)
+            items.append(item)
+
+            for (index, var qi) in items.enumerated() {
+                qi.order = index
+                qi.lastModified = .now
+                try qi.update(db)
+            }
+        }
+    }
+
+    /// Add a NEW episode to the queue at position 0, shifting all existing items down.
+    func addToQueueAtTop(episodeID: UUID) throws {
+        try db.write { db in
+            // Shift all existing queue items' order up by 1
+            let existing = try QueueItem
+                .order(QueueItem.Columns.order)
+                .fetchAll(db)
+
+            for var qi in existing {
+                qi.order += 1
+                qi.lastModified = .now
+                try qi.update(db)
+            }
+
+            // Insert new item at position 0
+            let newItem = QueueItem(episodeID: episodeID, order: 0)
+            try newItem.save(db)
+
+            // Update episode status
+            if var episode = try Episode.fetchOne(db, id: episodeID) {
+                episode.status = .queued
+                episode.lastModified = .now
+                try episode.update(db)
+            }
+        }
+    }
+
+    /// Hide an episode, optionally with a reminder date. Removes it from the queue if present.
+    func hideEpisode(_ episodeID: UUID, remindAt: Date?) throws {
+        try db.write { db in
+            // Remove from queue if present
+            _ = try QueueItem
+                .filter(QueueItem.Columns.episodeID == episodeID)
+                .deleteAll(db)
+
+            // Set status to hidden and store reminder date
+            if var episode = try Episode.fetchOne(db, id: episodeID) {
+                episode.status = .hidden
+                episode.hiddenUntil = remindAt
+                episode.lastModified = .now
+                try episode.update(db)
+            }
+        }
+    }
+
+    /// Return a hidden episode to the inbox, clearing the reminder date.
+    func unhideEpisode(_ episodeID: UUID) throws {
+        try db.write { db in
+            if var episode = try Episode.fetchOne(db, id: episodeID) {
+                episode.status = .inbox
+                episode.hiddenUntil = nil
+                episode.lastModified = .now
+                try episode.update(db)
+            }
+        }
+    }
+
+    /// Auto-unhide all episodes whose reminder time has passed (hiddenUntil <= now).
+    func unhideExpiredEpisodes() throws {
+        try db.write { db in
+            let now = Date.now
+            let episodes = try Episode
+                .filter(Episode.Columns.status == EpisodeStatus.hidden.rawValue)
+                .fetchAll(db)
+
+            for var episode in episodes where episode.hiddenUntil != nil && episode.hiddenUntil! <= now {
+                episode.status = .inbox
+                episode.hiddenUntil = nil
+                episode.lastModified = .now
+                try episode.update(db)
+            }
+        }
+    }
 }
 
 /// A queue item joined with its episode data.
 struct QueueItemWithEpisode: Codable, Sendable, FetchableRecord {
     var queueItem: QueueItem
     var episode: Episode
+}
+
+/// An episode joined with its parent podcast.
+struct EpisodeWithPodcast: Codable, Sendable, FetchableRecord, Identifiable {
+    var episode: Episode
+    var podcast: Podcast
+    var id: UUID { episode.id }
+}
+
+/// A queue item joined with its episode and parent podcast.
+struct QueueItemWithEpisodeAndPodcast: Codable, Sendable, FetchableRecord, Identifiable {
+    var queueItem: QueueItem
+    var episode: Episode
+    var podcast: Podcast
+    var id: UUID { queueItem.id }
 }

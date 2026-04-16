@@ -3,7 +3,7 @@ import SwiftUI
 /// Ordered playback queue. Episodes triaged from Inbox land here.
 struct QueueView: View {
     @Environment(DataStore.self) private var dataStore
-    @Environment(AudioEngine.self) private var audioEngine
+    @State private var selectedItem: QueueItemWithEpisodeAndPodcast?
 
     var body: some View {
         NavigationStack {
@@ -18,7 +18,7 @@ struct QueueView: View {
                     ForEach(dataStore.queue, id: \.queueItem.id) { item in
                         QueueEpisodeRow(item: item)
                             .onTapGesture {
-                                playEpisode(item.episode)
+                                selectedItem = item
                             }
                     }
                     .onMove { from, to in
@@ -30,19 +30,13 @@ struct QueueView: View {
                 }
             }
             .navigationTitle("Queue")
-        }
-    }
-
-    private func playEpisode(_ episode: Episode) {
-        // Prefer local file; fall back to remote streaming
-        if let localPath = episode.localFilePath, let fileURL = URL(string: localPath) ?? URL(fileURLWithPath: localPath) as URL? {
-            do {
-                try audioEngine.play(fileURL: fileURL, episodeID: episode.id, startPosition: episode.playbackPosition)
-            } catch {
-                print("Local playback error: \(error)")
+            .sheet(item: $selectedItem) {
+                EpisodeOptionsDrawer(
+                    episode: $0.episode,
+                    podcastTitle: $0.podcast.title,
+                    context: .queue
+                )
             }
-        } else if let remoteURL = URL(string: episode.audioURL) {
-            audioEngine.playStream(url: remoteURL, episodeID: episode.id, startPosition: episode.playbackPosition)
         }
     }
 
@@ -61,13 +55,16 @@ struct QueueView: View {
 }
 
 struct QueueEpisodeRow: View {
-    let item: QueueItemWithEpisode
+    let item: QueueItemWithEpisodeAndPodcast
     @Environment(DownloadManager.self) private var downloadManager
     @Environment(DataStore.self) private var dataStore
 
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
+                Text(item.podcast.title)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Text(item.episode.title)
                     .font(.headline)
                     .lineLimit(2)
