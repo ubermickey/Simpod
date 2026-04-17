@@ -3,7 +3,7 @@
 ## Pillar 1: User can play podcast episodes reliably (online + offline)
 | Dimension | Status | Key Deliverables | Acceptance Criteria |
 |-----------|--------|-------------------|-------------------|
-| Backend | NOT STARTED | RSS feed parser, episode downloader, audio engine, background download scheduler | Episodes download without failure; audio plays while app is backgrounded/locked; playback resumes after interruption |
+| Backend | IN PROGRESS | RSS feed parser (FeedKit + conditional GET), episode downloader, audio engine, background download scheduler, os_signpost diagnostics | Episodes download without failure; audio plays while app is backgrounded/locked; playback resumes after interruption |
 | UI | NOT STARTED | Now Playing screen, playback controls (play/pause/skip/seek), download progress indicator, mini player | One tap to play; playback controls respond < 100ms; mini player persists across screens |
 | Overall | NOT STARTED | Subscribe to feed → episodes appear → download → play offline | User subscribes, downloads episode on WiFi, plays on subway with no signal — zero failures |
 

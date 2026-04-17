@@ -3,23 +3,24 @@
 ## MODULE CONTRACT: FeedEngine
 
 PROVIDES:
-- `subscribe(feedURL: URL) async throws -> Podcast`: Parse RSS feed, return podcast metadata + episodes
-- `refresh(podcast: Podcast) async throws -> [Episode]`: Fetch new episodes for a subscribed podcast
-- `refreshAll() async throws -> [Podcast: [Episode]]`: Refresh all subscriptions
+- `subscribe(feedURL: String) async throws -> Podcast`: Fetch + parse RSS feed, store validators, return podcast metadata + episodes
+- `refresh(podcast: Podcast) async throws -> [Episode]`: Fetch new episodes with HTTP conditional GET (ETag/If-Modified-Since); returns `[]` on 304
+- `refreshAll() async -> [Podcast: [Episode]]`: Refresh all subscriptions with bounded concurrency (max 4), sliding window
 - `importOPML(data: Data) async throws -> (subscribed: Int, skipped: Int, failed: Int)`: Import podcast subscriptions from OPML data
 
 REQUIRES:
 - Network access (URLSession)
-- RSS parsing library (TBD — Council decision)
-- DataStore.save(podcast:) — to persist parsed data
+- FeedKit v10 (`Feed(data:)` for parse-only)
+- DataStore.savePodcast / DataStore.saveEpisodes / DataStore.fetchEpisodes
 
 INVARIANTS:
 - Never crashes on malformed RSS — returns partial data or descriptive error
-- Always normalizes episode dates to UTC
+- Supports HTTP conditional GET (ETag/If-Modified-Since); skips download+parse on 304 Not Modified
 - Idempotent: refreshing twice with same feed data produces identical results
+- os_signpost intervals for http-fetch, xml-parse, and refreshAll batch timing
 
 OWNER: Lane 1 (Feed + Audio Engine)
-STATUS: DRAFT
+STATUS: IN PROGRESS
 
 ---
 
@@ -148,7 +149,7 @@ STATUS: DRAFT
 
 | Module | Provides | Requires | Invariants | Status |
 |--------|----------|----------|------------|--------|
-| FeedEngine | subscribe, refresh, refreshAll, importOPML | URLSession, RSS lib, DataStore | No crash on malformed RSS; idempotent | DRAFT |
+| FeedEngine | subscribe, refresh, refreshAll, importOPML | URLSession, FeedKit v10, DataStore | No crash on malformed RSS; conditional GET; idempotent | IN PROGRESS |
 | AudioEngine | play, pause, seek, speed, state | AVFoundation, Episode URLs | Never silent fail; position persisted | DRAFT |
 | DownloadManager | download, cancel, progress, delete | URLSession bg, file storage, DataStore | Bg downloads; resumable; queryable size | DRAFT |
 | DataStore | CRUD, tags, moveToTop/Bottom, hide/unhide, addToQueueAtTop | GRDB, CloudKit hook | Reads never block; queue consistent | DRAFT |

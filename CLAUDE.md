@@ -144,7 +144,7 @@ xcodebuild -project Simpod.xcodeproj -scheme SimpodTests -destination 'platform=
 
 | Module | Provides | Requires | Invariants | Status |
 |--------|----------|----------|------------|--------|
-| FeedEngine | subscribe, refresh, refreshAll, importOPML | URLSession, FeedKit, DataStore | No crash on malformed RSS; idempotent | DRAFT |
+| FeedEngine | subscribe, refresh, refreshAll, importOPML | URLSession, FeedKit v10, DataStore | No crash on malformed RSS; conditional GET (ETag/If-Modified-Since); idempotent | IN PROGRESS |
 | AudioEngine | play, pause, seek, speed, state | AVAudioEngine, Episode URLs | Never silent fail; position persisted | DRAFT |
 | DownloadManager | download, cancel, progress, delete | URLSession bg, file storage, DataStore | Bg downloads; resumable; queryable size | DRAFT |
 | DataStore | CRUD for all entities, tags | GRDB, CloudKit hook | Reads never block; queue consistent | DRAFT |
@@ -172,12 +172,15 @@ xcodebuild -project Simpod.xcodeproj -scheme SimpodTests -destination 'platform=
 | Minimal chrome | All views | Overcast-inspired: fewest possible taps, sparse UI |
 | Protocol-first modules | Modules/ | Each module exposes a protocol; implementations are swappable |
 | Sync-aware data model | Models/, DataStore | All entities carry sync metadata (timestamps, CKRecord mapping) |
+| HTTP conditional GET | FeedEngine | ETag/If-Modified-Since headers; 304 skips download+parse; validators stored on Podcast model |
+| os_signpost instrumentation | FeedEngine | http-fetch, xml-parse, refreshAll intervals; zero overhead when Instruments not attached |
+| MetricKit diagnostics | DiagnosticsManager | Observability-only; logs 24h metric/diagnostic payloads; no functional behavior change |
 
 ## Swim Lanes
 
 | Lane | Features | Dependencies | Status |
 |------|----------|-------------|--------|
-| Lane 1: Feed + Audio | RSS parsing, audio engine, downloads | None | NOT STARTED |
+| Lane 1: Feed + Audio | RSS parsing, audio engine, downloads | None | IN PROGRESS |
 | Lane 2: UI Shell + Inbox | All SwiftUI screens, inbox triage | None (mock data) | NOT STARTED |
 | Lane 3: iCloud Sync | CKSyncEngine, CloudKit schema | None (local store) | NOT STARTED |
 | Lane 4: Integration | Wire all lanes together, E2E tests | Lanes 1+2+3 | NOT STARTED |

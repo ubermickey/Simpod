@@ -158,6 +158,13 @@ final class DataStore: @unchecked Sendable {
                 """)
         }
 
+        migrator.registerMigration("v4-conditional-get") { db in
+            try db.alter(table: "podcast") { t in
+                t.add(column: "httpETag", .text)
+                t.add(column: "httpLastModified", .text)
+            }
+        }
+
         try migrator.migrate(db)
     }
 
@@ -311,6 +318,24 @@ final class DataStore: @unchecked Sendable {
                 .filter(Episode.Columns.podcastID == podcastID)
                 .order(Episode.Columns.publishedDate.desc)
                 .fetchAll(db)
+        }
+    }
+
+    func fetchExistingGUIDs(for podcastID: UUID) throws -> Set<String> {
+        try db.read { db in
+            let guids = try String.fetchAll(db, sql:
+                "SELECT guid FROM episode WHERE podcastID = ?",
+                arguments: [podcastID.uuidString])
+            return Set(guids)
+        }
+    }
+
+    func saveRefreshResult(podcast: Podcast, newEpisodes: [Episode]) throws {
+        try db.write { db in
+            try podcast.save(db)
+            for episode in newEpisodes {
+                try episode.save(db)
+            }
         }
     }
 

@@ -3,6 +3,7 @@ import FeedKit
 import os
 
 private let logger = Logger(subsystem: "com.simpod", category: "FeedEngine")
+private let signposter = OSSignposter(subsystem: "com.simpod", category: "FeedEngine")
 
 /// Fetches and parses podcast RSS feeds using FeedKit v10.
 /// Invariant: never crashes on malformed RSS — returns partial data or descriptive error.
@@ -21,9 +22,15 @@ final class FeedEngine: @unchecked Sendable {
 
     /// Subscribe to a podcast by its RSS feed URL.
     func subscribe(feedURL: String) async throws -> Podcast {
-        let feed = try await Feed(urlString: feedURL)
+        let result = try await fetchFeedData(urlString: feedURL, etag: nil, lastModified: nil)
+        guard case .fetched(let data, let etag, let lastModified) = result else {
+            throw FeedError.invalidURL(feedURL)
+        }
+        let feed = try Feed(data: data)
 
-        let podcast = mapToPodcast(feed, feedURL: feedURL)
+        var podcast = mapToPodcast(feed, feedURL: feedURL)
+        podcast.httpETag = etag
+        podcast.httpLastModified = lastModified
         try dataStore.savePodcast(podcast)
 
         let episodes = mapToEpisodes(feed, podcastID: podcast.id)
@@ -36,50 +43,98 @@ final class FeedEngine: @unchecked Sendable {
     func refresh(podcast: Podcast) async throws -> [Episode] {
         logger.info("Refreshing feed: \(podcast.title, privacy: .public) — \(podcast.feedURL, privacy: .public)")
         UserDefaults.standard.set("\(podcast.title) — \(podcast.feedURL)", forKey: "com.simpod.crashBreadcrumb")
-        let feed = try await Feed(urlString: podcast.feedURL)
+
+        let fetchState = signposter.beginInterval("http-fetch", "\(podcast.title, privacy: .public)")
+        let result = try await fetchFeedData(
+            urlString: podcast.feedURL,
+            etag: podcast.httpETag,
+            lastModified: podcast.httpLastModified
+        )
+        signposter.endInterval("http-fetch", fetchState)
         UserDefaults.standard.removeObject(forKey: "com.simpod.crashBreadcrumb")
-        logger.info("Parsed feed OK: \(podcast.title, privacy: .public)")
 
-        let episodes = mapToEpisodes(feed, podcastID: podcast.id)
-        let existingEpisodes = try dataStore.fetchEpisodes(for: podcast.id)
-        let existingGUIDs = Set(existingEpisodes.map(\.guid))
+        switch result {
+        case .notModified:
+            logger.info("Feed not modified (304): \(podcast.title, privacy: .public)")
+            var updated = podcast
+            updated.lastRefreshed = .now
+            try dataStore.savePodcast(updated)
+            return []
 
-        let newEpisodes = episodes.filter { !existingGUIDs.contains($0.guid) }
-        if !newEpisodes.isEmpty {
-            try dataStore.saveEpisodes(newEpisodes)
+        case .fetched(let data, let etag, let lastModified):
+            let parseState = signposter.beginInterval("xml-parse", "\(podcast.title, privacy: .public)")
+            let feed = try Feed(data: data)
+            signposter.endInterval("xml-parse", parseState)
+            logger.info("Parsed feed OK: \(podcast.title, privacy: .public) (\(data.count) bytes)")
+
+            let episodes = mapToEpisodes(feed, podcastID: podcast.id)
+            let existingGUIDs = try dataStore.fetchExistingGUIDs(for: podcast.id)
+
+            let newEpisodes = episodes.filter { !existingGUIDs.contains($0.guid) }
+
+            var updated = podcast
+            updated.lastRefreshed = .now
+            updated.lastModified = .now
+            updated.httpETag = etag
+            updated.httpLastModified = lastModified
+            try dataStore.saveRefreshResult(podcast: updated, newEpisodes: newEpisodes)
+
+            return newEpisodes
         }
-
-        var updated = podcast
-        updated.lastRefreshed = .now
-        updated.lastModified = .now
-        try dataStore.savePodcast(updated)
-
-        return newEpisodes
     }
 
     /// Import podcasts from OPML data. Skips already-subscribed feeds.
+    /// Invariant: subscribed + skipped + failed == feedURLs.count.
     func importOPML(data: Data) async throws -> (subscribed: Int, skipped: Int, failed: Int) {
         let feedURLs = try OPMLParser.parseFeedURLs(from: data)
+        let maxConcurrent = 4
 
-        var subscribed = 0
+        var newFeedURLs: [String] = []
         var skipped = 0
-        var failed = 0
-
-        for feedURL in feedURLs {
-            if (try? dataStore.fetchPodcast(byFeedURL: feedURL)) != nil {
+        for url in feedURLs {
+            if (try? dataStore.fetchPodcast(byFeedURL: url)) != nil {
                 skipped += 1
-                continue
-            }
-            do {
-                _ = try await subscribe(feedURL: feedURL)
-                subscribed += 1
-            } catch {
-                print("[FeedEngine] OPML import failed for \(feedURL): \(error)")
-                failed += 1
+            } else {
+                newFeedURLs.append(url)
             }
         }
 
-        return (subscribed, skipped, failed)
+        let (subscribed, failed) = await withTaskGroup(of: Bool.self) { group -> (Int, Int) in
+            var iterator = newFeedURLs.makeIterator()
+
+            for _ in 0..<min(maxConcurrent, newFeedURLs.count) {
+                guard let feedURL = iterator.next() else { break }
+                group.addTask {
+                    do {
+                        _ = try await self.subscribe(feedURL: feedURL)
+                        return true
+                    } catch {
+                        logger.error("OPML import failed for \(feedURL, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                        return false
+                    }
+                }
+            }
+
+            var ok = 0
+            var bad = 0
+            for await success in group {
+                if success { ok += 1 } else { bad += 1 }
+                if let next = iterator.next() {
+                    group.addTask {
+                        do {
+                            _ = try await self.subscribe(feedURL: next)
+                            return true
+                        } catch {
+                            logger.error("OPML import failed for \(next, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                            return false
+                        }
+                    }
+                }
+            }
+            return (ok, bad)
+        }
+
+        return (subscribed: subscribed, skipped: skipped, failed: failed)
     }
 
     /// Refresh all subscribed podcasts with bounded concurrency (max 4).
@@ -111,7 +166,8 @@ final class FeedEngine: @unchecked Sendable {
             refreshingFeedTitle = ""
         }
 
-        return await withTaskGroup(of: (Podcast, [Episode]).self) { group in
+        let batchState = signposter.beginInterval("refreshAll", "\(snapshot.count) feeds")
+        let results = await withTaskGroup(of: (Podcast, [Episode]).self) { group in
             var iterator = snapshot.makeIterator()
 
             // Seed initial batch
@@ -133,10 +189,16 @@ final class FeedEngine: @unchecked Sendable {
             }
             return results
         }
+        signposter.endInterval("refreshAll", batchState)
+
+        let notModifiedCount = results.values.filter { $0.isEmpty }.count
+        let totalNew = results.values.map(\.count).reduce(0, +)
+        logger.info("Refresh complete: \(results.count) feeds, \(notModifiedCount) unchanged, \(totalNew) new episodes")
+
+        return results
     }
 
     private func refreshOne(_ podcast: Podcast) async -> (Podcast, [Episode]) {
-        await MainActor.run { self.refreshingFeedTitle = podcast.title }
         do {
             logger.info("Starting refresh for: \(podcast.title, privacy: .public)")
             let newEpisodes = try await self.refresh(podcast: podcast)
@@ -145,6 +207,54 @@ final class FeedEngine: @unchecked Sendable {
         } catch {
             logger.error("Failed to refresh \(podcast.title, privacy: .public): \(error.localizedDescription, privacy: .public)")
             return (podcast, [])
+        }
+    }
+
+    // MARK: - HTTP Fetch
+
+    private enum FeedFetchResult {
+        case notModified
+        case fetched(data: Data, etag: String?, lastModified: String?)
+    }
+
+    private func fetchFeedData(
+        urlString: String,
+        etag: String?,
+        lastModified: String?
+    ) async throws -> FeedFetchResult {
+        guard let url = URL(string: urlString) else {
+            throw FeedError.invalidURL(urlString)
+        }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 30
+        if let etag {
+            request.setValue(etag, forHTTPHeaderField: "If-None-Match")
+        }
+        if let lastModified {
+            request.setValue(lastModified, forHTTPHeaderField: "If-Modified-Since")
+        }
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw FeedError.invalidURL(urlString)
+        }
+
+        let newETag = httpResponse.value(forHTTPHeaderField: "ETag")
+        let newLastModified = httpResponse.value(forHTTPHeaderField: "Last-Modified")
+
+        switch httpResponse.statusCode {
+        case 304:
+            return .notModified
+        case 200...299:
+            return .fetched(data: data, etag: newETag, lastModified: newLastModified)
+        case 301, 308:
+            return .fetched(data: data, etag: newETag, lastModified: newLastModified)
+        case 404, 410:
+            throw FeedError.feedGone(urlString)
+        case 500...599:
+            throw FeedError.serverError(urlString, httpResponse.statusCode)
+        default:
+            throw FeedError.httpError(urlString, httpResponse.statusCode)
         }
     }
 
@@ -234,10 +344,16 @@ final class FeedEngine: @unchecked Sendable {
 
 enum FeedError: LocalizedError {
     case invalidURL(String)
+    case feedGone(String)
+    case serverError(String, Int)
+    case httpError(String, Int)
 
     var errorDescription: String? {
         switch self {
         case .invalidURL(let url): "Invalid feed URL: \(url)"
+        case .feedGone(let url): "Feed no longer available: \(url)"
+        case .serverError(let url, let code): "Server error \(code) for feed: \(url)"
+        case .httpError(let url, let code): "HTTP error \(code) for feed: \(url)"
         }
     }
 }

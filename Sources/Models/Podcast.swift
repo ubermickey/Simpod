@@ -11,6 +11,8 @@ struct Podcast: Identifiable, Codable, Sendable, FetchableRecord, PersistableRec
     var podcastDescription: String
     var lastRefreshed: Date?
     var lastModified: Date
+    var httpETag: String?
+    var httpLastModified: String?
 
     static let episodes = hasMany(Episode.self)
 
@@ -22,7 +24,9 @@ struct Podcast: Identifiable, Codable, Sendable, FetchableRecord, PersistableRec
         artworkURL: String? = nil,
         podcastDescription: String = "",
         lastRefreshed: Date? = nil,
-        lastModified: Date = .now
+        lastModified: Date = .now,
+        httpETag: String? = nil,
+        httpLastModified: String? = nil
     ) {
         self.id = id
         self.feedURL = feedURL
@@ -32,6 +36,8 @@ struct Podcast: Identifiable, Codable, Sendable, FetchableRecord, PersistableRec
         self.podcastDescription = podcastDescription
         self.lastRefreshed = lastRefreshed
         self.lastModified = lastModified
+        self.httpETag = httpETag
+        self.httpLastModified = httpLastModified
     }
 
     enum Columns {
@@ -40,5 +46,7 @@ struct Podcast: Identifiable, Codable, Sendable, FetchableRecord, PersistableRec
         static let title = Column(CodingKeys.title)
         static let lastRefreshed = Column(CodingKeys.lastRefreshed)
         static let lastModified = Column(CodingKeys.lastModified)
+        static let httpETag = Column(CodingKeys.httpETag)
+        static let httpLastModified = Column(CodingKeys.httpLastModified)
     }
 }

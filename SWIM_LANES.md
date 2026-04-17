@@ -19,10 +19,21 @@ Lane 4: DEPENDS ON Lanes 1, 2, 3 (sync point)
 
 ## Lanes
 
-### Lane 1: Feed + Audio Engine (Backend Core)
+### Lane 1: Feed + Audio Engine (Backend Core) — IN PROGRESS
 - **Features**: RSS feed parsing, episode metadata extraction, audio download manager, AVPlayer playback engine, background download scheduling, smart speed, voice boost
 - **Depends on**: Nothing — foundational lane
 - **Deliverable**: Headless podcast engine that can subscribe to feeds, download episodes, and play audio — no UI needed
+- **Completed**:
+  - FeedEngine: subscribe, refresh, refreshAll with bounded concurrency (max 4)
+  - HTTP conditional GET (ETag/If-Modified-Since) — skips re-download on 304
+  - os_signpost instrumentation (http-fetch, xml-parse, refreshAll)
+  - Crash fixes: bounded concurrency, GRDB reentrant write fix, breadcrumbs
+  - MetricKit diagnostics subscriber
+- **Remaining**:
+  - Lock screen controls (MPRemoteCommandCenter)
+  - Now Playing metadata (MPNowPlayingInfoCenter)
+  - Route change handling (headphone/BT disconnect → pause)
+  - Background URLSession downloads
 - **Acceptance criteria**: 
   - Parse 10 real podcast feeds without failure
   - Download episode audio in background

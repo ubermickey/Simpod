@@ -9,6 +9,7 @@ final class AppContainer {
     let downloadManager: DownloadManager
     let backgroundRefresh: BackgroundRefreshManager
     let syncEngine: SyncEngine
+    let diagnostics: DiagnosticsManager
 
     init() throws {
         self.dataStore = try DataStore.production()
@@ -17,6 +18,9 @@ final class AppContainer {
         self.downloadManager = DownloadManager()
         self.backgroundRefresh = BackgroundRefreshManager(feedEngine: feedEngine)
         self.syncEngine = SyncEngine(dataStore: dataStore)
+        self.diagnostics = DiagnosticsManager()
+
+        diagnostics.start()
 
         // Wire position persistence
         audioEngine.onPositionUpdate = { [weak dataStore] episodeID, position in
@@ -36,5 +40,6 @@ final class AppContainer {
         self.downloadManager = DownloadManager()
         self.backgroundRefresh = BackgroundRefreshManager(feedEngine: feedEngine)
         self.syncEngine = SyncEngine(dataStore: dataStore)
+        self.diagnostics = DiagnosticsManager()
     }
 }
