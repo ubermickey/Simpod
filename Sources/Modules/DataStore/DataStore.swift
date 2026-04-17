@@ -8,14 +8,14 @@ import Observation
 @Observable
 final class DataStore: @unchecked Sendable {
     private static let recentEpisodeCutoff: TimeInterval = 24 * 60 * 60 // 24 hours
-    private let db: DatabaseQueue
+    private let db: any DatabaseWriter
 
     var podcasts: [Podcast] = []
     var inbox: [EpisodeWithPodcast] = []
     var queue: [QueueItemWithEpisodeAndPodcast] = []
     var reminders: [EpisodeWithPodcast] = []
 
-    init(db: DatabaseQueue) throws {
+    init(db: any DatabaseWriter) throws {
         self.db = db
         try Self.migrate(db)
         startObservations()
@@ -27,17 +27,18 @@ final class DataStore: @unchecked Sendable {
     }
 
     /// Create the production store at the default path.
+    /// Uses DatabasePool (WAL) so SwiftUI reads never block on refresh writes.
     static func production() throws -> DataStore {
         let url = try FileManager.default
             .url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
             .appendingPathComponent("simpod.db")
-        let db = try DatabaseQueue(path: url.path)
+        let db = try DatabasePool(path: url.path)
         return try DataStore(db: db)
     }
 
     // MARK: - Migrations
 
-    private static func migrate(_ db: DatabaseQueue) throws {
+    private static func migrate(_ db: any DatabaseWriter) throws {
         var migrator = DatabaseMigrator()
 
         migrator.registerMigration("v1-initial") { db in

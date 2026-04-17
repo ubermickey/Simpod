@@ -141,7 +141,7 @@ final class FeedEngine: @unchecked Sendable {
     /// Sliding-window: seeds 4 tasks, launches the next as each completes.
     /// Debounces duplicate calls; tracks progress via observable properties.
     func refreshAll() async -> [Podcast: [Episode]] {
-        let maxConcurrentRefreshes = 4
+        let maxConcurrentRefreshes = 2
 
         let shouldRefresh = await MainActor.run {
             guard !isRefreshing else { return false }
@@ -226,7 +226,7 @@ final class FeedEngine: @unchecked Sendable {
             throw FeedError.invalidURL(urlString)
         }
         var request = URLRequest(url: url)
-        request.timeoutInterval = 30
+        request.timeoutInterval = 15
         if let etag {
             request.setValue(etag, forHTTPHeaderField: "If-None-Match")
         }
