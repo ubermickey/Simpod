@@ -104,8 +104,8 @@ Simpod is a native iOS offline-first podcast player for Mike — a power listene
 ### Build / Test / Run
 ```bash
 xcodegen generate              # Regenerate .xcodeproj from project.yml
-xcodebuild -project Simpod.xcodeproj -scheme Simpod -destination 'platform=iOS Simulator,name=iPhone 16' build
-xcodebuild -project Simpod.xcodeproj -scheme SimpodTests -destination 'platform=iOS Simulator,name=iPhone 16' test
+xcodebuild -project Simpod.xcodeproj -scheme Simpod -destination 'platform=iOS Simulator,name=iPhone 15 Pro Max' build
+xcodebuild -project Simpod.xcodeproj -scheme SimpodTests -destination 'platform=iOS Simulator,name=iPhone 15 Pro Max' test
 ```
 
 ## Architecture

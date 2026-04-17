@@ -30,6 +30,10 @@ struct SimpodApp: App {
                         UIApplication.shared.isIdleTimerDisabled = true
                         #endif
                     }
+                    .task {
+                        guard !container.dataStore.podcasts.isEmpty else { return }
+                        _ = await container.feedEngine.refreshAll()
+                    }
             } else if let loadError {
                 Text("Failed to start: \(loadError)")
                     .foregroundStyle(.red)
@@ -37,6 +41,10 @@ struct SimpodApp: App {
             } else {
                 ProgressView("Loading...")
                     .task {
+                        if let breadcrumb = UserDefaults.standard.string(forKey: "com.simpod.crashBreadcrumb") {
+                            logger.warning("Previous run interrupted during feed refresh: \(breadcrumb, privacy: .public)")
+                            UserDefaults.standard.removeObject(forKey: "com.simpod.crashBreadcrumb")
+                        }
                         logger.info("Starting AppContainer init")
                         do {
                             let c = try AppContainer()

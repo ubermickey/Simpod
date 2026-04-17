@@ -7,6 +7,7 @@ import Observation
 /// Uses @Observable + ValueObservation for reactive SwiftUI updates.
 @Observable
 final class DataStore: @unchecked Sendable {
+    private static let recentEpisodeCutoff: TimeInterval = 24 * 60 * 60 // 24 hours
     private let db: DatabaseQueue
 
     var podcasts: [Podcast] = []
@@ -371,7 +372,10 @@ final class DataStore: @unchecked Sendable {
         try updateEpisodeStatus(episodeID, status: .skipped)
     }
 
-    var inboxCount: Int { inbox.count }
+    var inboxCount: Int {
+        let cutoff = Date.now.addingTimeInterval(-Self.recentEpisodeCutoff)
+        return inbox.filter { $0.episode.publishedDate >= cutoff }.count
+    }
 
     // MARK: - Local Search
 
@@ -600,8 +604,10 @@ final class DataStore: @unchecked Sendable {
 
     /// Move an episode to queue position 0 and start playback.
     /// Deduplicates: removes any existing queue entry for this episode first.
+    /// Audio engine calls occur AFTER the db.write transaction commits
+    /// to prevent reentrant writes (AudioEngine.stop → persistPosition → db.write).
     func moveEpisodeToTopAndPlay(_ episodeID: UUID, audioEngine: AudioEngine) throws {
-        try db.write { db in
+        let playbackInfo: (url: URL, isLocal: Bool, position: TimeInterval)? = try db.write { db in
             // Remove existing queue entry if present (deduplicate)
             _ = try QueueItem
                 .filter(QueueItem.Columns.episodeID == episodeID)
@@ -622,19 +628,28 @@ final class DataStore: @unchecked Sendable {
             let newItem = QueueItem(episodeID: episodeID, order: 0)
             try newItem.save(db)
 
-            // Update episode status
+            // Update episode status and collect playback info
             if var episode = try Episode.fetchOne(db, id: episodeID) {
                 episode.status = .queued
                 episode.lastModified = .now
                 try episode.update(db)
 
-                // Start playback
                 if let localPath = episode.localFilePath,
                    let fileURL = URL(string: localPath) ?? URL(fileURLWithPath: localPath) as URL? {
-                    try audioEngine.play(fileURL: fileURL, episodeID: episode.id, startPosition: episode.playbackPosition)
+                    return (url: fileURL, isLocal: true, position: episode.playbackPosition)
                 } else if let remoteURL = URL(string: episode.audioURL) {
-                    audioEngine.playStream(url: remoteURL, episodeID: episode.id, startPosition: episode.playbackPosition)
+                    return (url: remoteURL, isLocal: false, position: episode.playbackPosition)
                 }
+            }
+            return nil
+        }
+
+        // Start playback outside the transaction
+        if let info = playbackInfo {
+            if info.isLocal {
+                try audioEngine.play(fileURL: info.url, episodeID: episodeID, startPosition: info.position)
+            } else {
+                audioEngine.playStream(url: info.url, episodeID: episodeID, startPosition: info.position)
             }
         }
     }

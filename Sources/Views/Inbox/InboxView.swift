@@ -4,6 +4,7 @@ import SwiftUI
 struct InboxView: View {
     @Environment(DataStore.self) private var dataStore
     @Environment(AudioEngine.self) private var audioEngine
+    @Environment(FeedEngine.self) private var feedEngine
     @State private var expandedEpisodeID: UUID?
     @State private var showInfoForEpisode: EpisodeWithPodcast?
 
@@ -20,6 +21,7 @@ struct InboxView: View {
                     ForEach(dataStore.inbox, id: \.episode.id) { item in
                         VStack(spacing: 0) {
                             InboxEpisodeRow(item: item)
+                                .contentShape(Rectangle())
                                 .onTapGesture {
                                     withAnimation(.easeInOut(duration: 0.25)) {
                                         if expandedEpisodeID == item.episode.id {
@@ -64,8 +66,10 @@ struct InboxView: View {
                             .tint(.orange)
                         }
                     }
-                    .animation(.easeInOut(duration: 0.25), value: expandedEpisodeID)
                 }
+            }
+            .refreshable {
+                _ = await feedEngine.refreshAll()
             }
             .navigationTitle("Inbox")
             .toolbar {
@@ -100,11 +104,12 @@ struct InboxEpisodeRow: View {
                 Text(item.podcast.title)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
                 Text(item.episode.title)
                     .font(.headline)
                     .lineLimit(2)
                 HStack {
-                    Text(item.episode.publishedDate, style: .date)
+                    Text(relativeTimestamp(for: item.episode.publishedDate))
                     if item.episode.duration > 0 {
                         Text("·")
                         Text(formatDuration(item.episode.duration))
@@ -155,5 +160,28 @@ struct InboxEpisodeRow: View {
             return "\(mins / 60)h \(mins % 60)m"
         }
         return "\(mins)m"
+    }
+
+    private func relativeTimestamp(for date: Date) -> String {
+        let elapsed = Date.now.timeIntervalSince(date)
+
+        if elapsed < 0 {
+            return date.formatted(.dateTime.month(.abbreviated).day())
+        }
+
+        switch elapsed {
+        case ..<60:
+            return "Just now"
+        case ..<3600:
+            return "\(Int(elapsed / 60))m ago"
+        case ..<86400:
+            return "\(Int(elapsed / 3600))h ago"
+        default:
+            let calendar = Calendar.current
+            if calendar.isDateInYesterday(date) {
+                return "Yesterday"
+            }
+            return date.formatted(.dateTime.month(.abbreviated).day())
+        }
     }
 }

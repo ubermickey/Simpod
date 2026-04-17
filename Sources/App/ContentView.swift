@@ -3,6 +3,7 @@ import SwiftUI
 struct ContentView: View {
     @Environment(AudioEngine.self) private var audioEngine
     @Environment(DataStore.self) private var dataStore
+    @Environment(FeedEngine.self) private var feedEngine
     @State private var showNowPlaying = false
 
     var body: some View {
@@ -44,6 +45,14 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showNowPlaying) {
             NowPlayingView()
+        }
+        .overlay(alignment: .top) {
+            if feedEngine.isRefreshing {
+                RefreshStatusBar()
+                    .padding(.top, 4)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .animation(.easeInOut(duration: 0.3), value: feedEngine.isRefreshing)
+            }
         }
     }
 }

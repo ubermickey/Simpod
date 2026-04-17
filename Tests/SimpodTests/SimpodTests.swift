@@ -434,3 +434,37 @@ import GRDB
     #expect(fetched[0].title == "Batch Episode 10")
     #expect(fetched[9].title == "Batch Episode 1")
 }
+
+// MARK: - Inbox Badge Count
+
+@Test("Inbox count only includes episodes from last 24 hours")
+func inboxCountRecent() throws {
+    let store = try DataStore.preview()
+    let podcast = Podcast(feedURL: "https://example.com/feed", title: "Test Show")
+    try store.savePodcast(podcast)
+
+    let recentEpisode = Episode(
+        podcastID: podcast.id,
+        title: "Recent Episode",
+        audioURL: "https://example.com/recent.mp3",
+        publishedDate: Date.now.addingTimeInterval(-3600),
+        status: .inbox
+    )
+    let oldEpisode = Episode(
+        podcastID: podcast.id,
+        title: "Old Episode",
+        audioURL: "https://example.com/old.mp3",
+        publishedDate: Date.now.addingTimeInterval(-172800),
+        status: .inbox
+    )
+
+    // Populate inbox directly — ValueObservation is async and unreliable in tests
+    store.inbox = [
+        EpisodeWithPodcast(episode: recentEpisode, podcast: podcast),
+        EpisodeWithPodcast(episode: oldEpisode, podcast: podcast)
+    ]
+
+    // Both are in inbox, but only the recent one counts toward badge
+    #expect(store.inbox.count == 2)
+    #expect(store.inboxCount == 1)
+}

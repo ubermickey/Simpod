@@ -19,6 +19,7 @@ struct QueueView: View {
                     ForEach(dataStore.queue, id: \.queueItem.id) { item in
                         VStack(spacing: 0) {
                             QueueEpisodeRow(item: item)
+                                .contentShape(Rectangle())
                                 .onTapGesture {
                                     withAnimation(.easeInOut(duration: 0.25)) {
                                         if expandedEpisodeID == item.episode.id {
@@ -53,7 +54,6 @@ struct QueueView: View {
                     .onDelete { offsets in
                         deleteItems(at: offsets)
                     }
-                    .animation(.easeInOut(duration: 0.25), value: expandedEpisodeID)
                 }
             }
             .navigationTitle("Queue")
@@ -90,6 +90,7 @@ struct QueueEpisodeRow: View {
                 Text(item.podcast.title)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
                 Text(item.episode.title)
                     .font(.headline)
                     .lineLimit(2)

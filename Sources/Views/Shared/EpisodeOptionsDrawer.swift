@@ -112,7 +112,7 @@ struct EpisodeOptionsDrawer: View {
                 .frame(maxWidth: .infinity, minHeight: 44)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.borderless)
         .accessibilityLabel("Download")
     }
 
@@ -126,7 +126,7 @@ struct EpisodeOptionsDrawer: View {
                 .frame(maxWidth: .infinity, minHeight: 44)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.borderless)
         .accessibilityLabel(label)
     }
 

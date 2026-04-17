@@ -1,11 +1,19 @@
 import Foundation
 import FeedKit
+import os
+
+private let logger = Logger(subsystem: "com.simpod", category: "FeedEngine")
 
 /// Fetches and parses podcast RSS feeds using FeedKit v10.
 /// Invariant: never crashes on malformed RSS — returns partial data or descriptive error.
 @Observable
 final class FeedEngine: @unchecked Sendable {
     private let dataStore: DataStore
+
+    var isRefreshing = false
+    var refreshTotal = 0
+    var refreshCompleted = 0
+    var refreshingFeedTitle = ""
 
     init(dataStore: DataStore) {
         self.dataStore = dataStore
@@ -26,7 +34,11 @@ final class FeedEngine: @unchecked Sendable {
 
     /// Refresh a podcast feed and return new episodes.
     func refresh(podcast: Podcast) async throws -> [Episode] {
+        logger.info("Refreshing feed: \(podcast.title, privacy: .public) — \(podcast.feedURL, privacy: .public)")
+        UserDefaults.standard.set("\(podcast.title) — \(podcast.feedURL)", forKey: "com.simpod.crashBreadcrumb")
         let feed = try await Feed(urlString: podcast.feedURL)
+        UserDefaults.standard.removeObject(forKey: "com.simpod.crashBreadcrumb")
+        logger.info("Parsed feed OK: \(podcast.title, privacy: .public)")
 
         let episodes = mapToEpisodes(feed, podcastID: podcast.id)
         let existingEpisodes = try dataStore.fetchEpisodes(for: podcast.id)
@@ -70,28 +82,69 @@ final class FeedEngine: @unchecked Sendable {
         return (subscribed, skipped, failed)
     }
 
-    /// Refresh all subscribed podcasts concurrently.
-    /// Each feed refresh runs in parallel — a 10-podcast library refreshes
-    /// in ~1 network round-trip instead of 10 sequential ones.
+    /// Refresh all subscribed podcasts with bounded concurrency (max 4).
+    /// Sliding-window: seeds 4 tasks, launches the next as each completes.
+    /// Debounces duplicate calls; tracks progress via observable properties.
     func refreshAll() async -> [Podcast: [Episode]] {
-        await withTaskGroup(of: (Podcast, [Episode]).self) { group in
-            for podcast in dataStore.podcasts {
-                group.addTask {
-                    do {
-                        let newEpisodes = try await self.refresh(podcast: podcast)
-                        return (podcast, newEpisodes)
-                    } catch {
-                        print("Failed to refresh \(podcast.title): \(error)")
-                        return (podcast, [])
-                    }
-                }
+        let maxConcurrentRefreshes = 4
+
+        let shouldRefresh = await MainActor.run {
+            guard !isRefreshing else { return false }
+            isRefreshing = true
+            return true
+        }
+        guard shouldRefresh else { return [:] }
+
+        defer {
+            Task { @MainActor in
+                self.isRefreshing = false
+                self.refreshTotal = 0
+                self.refreshCompleted = 0
+                self.refreshingFeedTitle = ""
+            }
+        }
+
+        let snapshot = await MainActor.run { dataStore.podcasts }
+        await MainActor.run {
+            refreshTotal = snapshot.count
+            refreshCompleted = 0
+            refreshingFeedTitle = ""
+        }
+
+        return await withTaskGroup(of: (Podcast, [Episode]).self) { group in
+            var iterator = snapshot.makeIterator()
+
+            // Seed initial batch
+            for _ in 0..<min(maxConcurrentRefreshes, snapshot.count) {
+                guard let podcast = iterator.next() else { break }
+                group.addTask { await self.refreshOne(podcast) }
             }
 
             var results: [Podcast: [Episode]] = [:]
             for await (podcast, episodes) in group {
                 results[podcast] = episodes
+                await MainActor.run {
+                    self.refreshCompleted += 1
+                }
+                // Launch next as each completes
+                if let next = iterator.next() {
+                    group.addTask { await self.refreshOne(next) }
+                }
             }
             return results
+        }
+    }
+
+    private func refreshOne(_ podcast: Podcast) async -> (Podcast, [Episode]) {
+        await MainActor.run { self.refreshingFeedTitle = podcast.title }
+        do {
+            logger.info("Starting refresh for: \(podcast.title, privacy: .public)")
+            let newEpisodes = try await self.refresh(podcast: podcast)
+            logger.info("Completed refresh for: \(podcast.title, privacy: .public) — \(newEpisodes.count) new episodes")
+            return (podcast, newEpisodes)
+        } catch {
+            logger.error("Failed to refresh \(podcast.title, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            return (podcast, [])
         }
     }
 
