@@ -175,6 +175,7 @@ final class DataStore: @unchecked Sendable {
     // MARK: - Observations
 
     private var observationCancellables: [AnyDatabaseCancellable] = []
+    private var combineCancellables: Set<AnyCancellable> = []
     private var timerCancellable: AnyCancellable?
 
     private func startObservations() {
@@ -193,7 +194,10 @@ final class DataStore: @unchecked Sendable {
                 self?.podcasts = podcasts
             }
 
-            let inboxCancellable = ValueObservation.tracking { db in
+            // Inbox & queue use Combine debounce(50ms) to coalesce
+            // refresh-burst observation deliveries onto a single MainActor
+            // assignment per silence window — see plan §C.
+            ValueObservation.tracking { db in
                 try Episode
                     .filter(
                         Episode.Columns.status == EpisodeStatus.inbox.rawValue
@@ -204,27 +208,45 @@ final class DataStore: @unchecked Sendable {
                     .including(required: Episode.podcast)
                     .asRequest(of: EpisodeWithPodcast.self)
                     .fetchAll(db)
-            }.start(in: db) { error in
-                print("Inbox observation error: \(error)")
-            } onChange: { [weak self] episodes in
-                guard let self else { return }
-                self.inbox = episodes
-                let cutoff = Date.now.addingTimeInterval(-Self.recentEpisodeCutoff)
-                self.inboxCount = episodes.filter { $0.episode.publishedDate >= cutoff }.count
             }
+            .publisher(in: db)
+            .debounce(for: .milliseconds(50), scheduler: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { completion in
+                    if case .failure(let error) = completion {
+                        print("Inbox observation error: \(error)")
+                    }
+                },
+                receiveValue: { [weak self] episodes in
+                    guard let self else { return }
+                    self.inbox = episodes
+                    let cutoff = Date.now.addingTimeInterval(-Self.recentEpisodeCutoff)
+                    self.inboxCount = episodes.filter { $0.episode.publishedDate >= cutoff }.count
+                }
+            )
+            .store(in: &self.combineCancellables)
 
-            let queueCancellable = ValueObservation.tracking { db in
+            ValueObservation.tracking { db in
                 try QueueItem
                     .order(QueueItem.Columns.order)
                     .including(required: QueueItem.episode
                         .including(required: Episode.podcast))
                     .asRequest(of: QueueItemWithEpisodeAndPodcast.self)
                     .fetchAll(db)
-            }.start(in: db) { error in
-                print("Queue observation error: \(error)")
-            } onChange: { [weak self] items in
-                self?.queue = items
             }
+            .publisher(in: db)
+            .debounce(for: .milliseconds(50), scheduler: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { completion in
+                    if case .failure(let error) = completion {
+                        print("Queue observation error: \(error)")
+                    }
+                },
+                receiveValue: { [weak self] items in
+                    self?.queue = items
+                }
+            )
+            .store(in: &self.combineCancellables)
 
             let remindersCancellable = ValueObservation.tracking { db in
                 try Episode
@@ -245,8 +267,6 @@ final class DataStore: @unchecked Sendable {
 
             self.observationCancellables = [
                 podcastCancellable,
-                inboxCancellable,
-                queueCancellable,
                 remindersCancellable
             ]
 
