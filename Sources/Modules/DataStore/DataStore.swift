@@ -14,6 +14,9 @@ final class DataStore: @unchecked Sendable {
     var inbox: [EpisodeWithPodcast] = []
     var queue: [QueueItemWithEpisodeAndPodcast] = []
     var reminders: [EpisodeWithPodcast] = []
+    /// Stored to keep ContentView's tab badge from re-observing `inbox`
+    /// and re-filtering on every render (see plan §Change 2).
+    var inboxCount: Int = 0
 
     init(db: any DatabaseWriter) throws {
         self.db = db
@@ -204,7 +207,10 @@ final class DataStore: @unchecked Sendable {
             }.start(in: db) { error in
                 print("Inbox observation error: \(error)")
             } onChange: { [weak self] episodes in
-                self?.inbox = episodes
+                guard let self else { return }
+                self.inbox = episodes
+                let cutoff = Date.now.addingTimeInterval(-Self.recentEpisodeCutoff)
+                self.inboxCount = episodes.filter { $0.episode.publishedDate >= cutoff }.count
             }
 
             let queueCancellable = ValueObservation.tracking { db in
@@ -396,11 +402,6 @@ final class DataStore: @unchecked Sendable {
 
     func triageToSkip(episodeID: UUID) throws {
         try updateEpisodeStatus(episodeID, status: .skipped)
-    }
-
-    var inboxCount: Int {
-        let cutoff = Date.now.addingTimeInterval(-Self.recentEpisodeCutoff)
-        return inbox.filter { $0.episode.publishedDate >= cutoff }.count
     }
 
     // MARK: - Local Search
@@ -727,15 +728,19 @@ final class DataStore: @unchecked Sendable {
     }
 
     /// Auto-unhide all episodes whose 24-hour hide period has passed (hiddenUntil <= now).
+    /// Read-first: avoids opening an empty write transaction (which would re-fire
+    /// every ValueObservation tracking the episode table — see plan §Change 1).
     func unhideExpiredEpisodes() throws {
-        try db.write { db in
-            let now = Date.now
-            let episodes = try Episode
+        let toUnhide = try db.read { db in
+            try Episode
                 .filter(Episode.Columns.status == EpisodeStatus.hidden.rawValue
-                    && Episode.Columns.hiddenUntil <= now)
+                    && Episode.Columns.hiddenUntil <= Date.now)
                 .fetchAll(db)
+        }
+        guard !toUnhide.isEmpty else { return }
 
-            for var episode in episodes {
+        try db.write { db in
+            for var episode in toUnhide {
                 episode.status = .inbox
                 episode.hiddenUntil = nil
                 episode.lastModified = .now
