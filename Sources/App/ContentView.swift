@@ -64,6 +64,7 @@ struct MiniPlayerView: View {
     @Binding var showNowPlaying: Bool
 
     var body: some View {
+        let info = currentInfo
         HStack(spacing: 12) {
             // Play/Pause — leftmost, largest, pink accent when playing
             Button {
@@ -105,17 +106,17 @@ struct MiniPlayerView: View {
 
             // Episode info (trailing)
             VStack(alignment: .trailing, spacing: 2) {
-                Text(currentEpisodeTitle)
+                Text(info.episodeTitle)
                     .font(.caption.bold())
                     .lineLimit(1)
-                Text(currentPodcastTitle)
+                Text(info.podcastTitle)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
 
             // Podcast artwork
-            AsyncImage(url: currentPodcast?.artworkURL.flatMap(URL.init)) { image in
+            AsyncImage(url: info.podcast?.artworkURL.flatMap(URL.init)) { image in
                 image.resizable().aspectRatio(contentMode: .fill)
             } placeholder: {
                 RoundedRectangle(cornerRadius: 6).fill(.quaternary)
@@ -130,32 +131,20 @@ struct MiniPlayerView: View {
         .onTapGesture { showNowPlaying = true }
     }
 
-    private var currentEpisodeTitle: String {
-        guard let episodeID = audioEngine.currentEpisodeID else { return "Not Playing" }
-        if let found = dataStore.inbox.first(where: { $0.episode.id == episodeID }) {
-            return found.episode.title
+    /// Single lookup into inbox + queue; called once per render via the
+    /// `let info = currentInfo` binding in body. Replaces three separate
+    /// computed properties that each scanned both arrays.
+    private var currentInfo: (episodeTitle: String, podcastTitle: String, podcast: Podcast?) {
+        guard let episodeID = audioEngine.currentEpisodeID else {
+            return ("Not Playing", "", nil)
         }
-        if let found = dataStore.queue.first(where: { $0.episode.id == episodeID }) {
-            return found.episode.title
+        if let match = dataStore.inbox.first(where: { $0.episode.id == episodeID }) {
+            return (match.episode.title, match.podcast.title, match.podcast)
         }
-        return "Now Playing"
-    }
-
-    private var currentPodcastTitle: String {
-        guard let episodeID = audioEngine.currentEpisodeID else { return "" }
-        if let found = dataStore.inbox.first(where: { $0.episode.id == episodeID }) {
-            return found.podcast.title
+        if let match = dataStore.queue.first(where: { $0.episode.id == episodeID }) {
+            return (match.episode.title, match.podcast.title, match.podcast)
         }
-        if let found = dataStore.queue.first(where: { $0.episode.id == episodeID }) {
-            return found.podcast.title
-        }
-        return ""
-    }
-
-    private var currentPodcast: Podcast? {
-        guard let episodeID = audioEngine.currentEpisodeID else { return nil }
-        return dataStore.inbox.first(where: { $0.episode.id == episodeID })?.podcast
-            ?? dataStore.queue.first(where: { $0.episode.id == episodeID })?.podcast
+        return ("Now Playing", "", nil)
     }
 
     private func playNextInQueue() {
