@@ -1,6 +1,9 @@
 import AVFoundation
 import Foundation
+import MediaPlayer
 import Observation
+import UIKit
+import os
 
 /// Podcast audio playback engine built on AVAudioEngine.
 /// Supports streaming, local playback, speed control, and will support
@@ -33,9 +36,25 @@ final class AudioEngine: @unchecked Sendable {
     // Position persistence callback
     var onPositionUpdate: ((UUID, TimeInterval) -> Void)?
 
-    init() {
+    // MARK: - Now Playing infrastructure
+
+    /// Weak ref so AudioEngine never extends DataStore's lifetime.
+    /// AppContainer owns both strongly for the app's lifetime.
+    private weak var dataStore: DataStore?
+
+    /// Bounded in-memory artwork cache (FIFO eviction). 8 entries are
+    /// plenty for the active set; podcast artwork is small.
+    private var artworkCache: [String: UIImage] = [:]
+    private var artworkCacheOrder: [String] = []
+    private let artworkCacheLimit = 8
+
+    private let nowPlayingLogger = Logger(subsystem: "com.simpod", category: "NowPlaying")
+
+    init(dataStore: DataStore? = nil) {
+        self.dataStore = dataStore
         setupAudioSession()
         setupEngine()
+        setupRemoteCommands()
     }
 
     // MARK: - Audio Session
@@ -56,6 +75,16 @@ final class AudioEngine: @unchecked Sendable {
             queue: .main
         ) { [weak self] notification in
             self?.handleInterruption(notification)
+        }
+
+        // Handle output route changes — only old-device-unavailable
+        // (headphone unplug, AirPods removed, BT speaker off) pauses.
+        NotificationCenter.default.addObserver(
+            forName: AVAudioSession.routeChangeNotification,
+            object: session,
+            queue: .main
+        ) { [weak self] notification in
+            self?.handleRouteChange(notification)
         }
     }
 
@@ -97,6 +126,7 @@ final class AudioEngine: @unchecked Sendable {
         playbackState = .playing
         currentPosition = startPosition
         startPositionTracking()
+        updateNowPlayingInfo(fullPublish: true)
     }
 
     /// Stream an episode from a remote URL via AVPlayer.
@@ -130,6 +160,7 @@ final class AudioEngine: @unchecked Sendable {
                     self.currentPosition = startPosition
                     self.playbackState = .playing
                     self.startPositionTracking()
+                    self.updateNowPlayingInfo(fullPublish: true)
                 case .failed:
                     self.playbackState = .error
                 default:
@@ -148,6 +179,7 @@ final class AudioEngine: @unchecked Sendable {
         playbackState = .paused
         stopPositionTracking()
         persistPosition()
+        updateNowPlayingInfo(fullPublish: false)
     }
 
     func resume() {
@@ -158,6 +190,7 @@ final class AudioEngine: @unchecked Sendable {
         }
         playbackState = .playing
         startPositionTracking()
+        updateNowPlayingInfo(fullPublish: false)
     }
 
     func stop() {
@@ -179,12 +212,14 @@ final class AudioEngine: @unchecked Sendable {
         currentEpisodeID = nil
         currentPosition = 0
         duration = 0
+        clearNowPlayingInfo()
     }
 
     func seek(to position: TimeInterval) throws {
         if isStreamingRemote {
             avPlayer?.seek(to: CMTime(seconds: position, preferredTimescale: 600))
             currentPosition = position
+            updateNowPlayingInfo(fullPublish: false)
             return
         }
 
@@ -203,6 +238,7 @@ final class AudioEngine: @unchecked Sendable {
         if wasPlaying {
             playerNode.play()
         }
+        updateNowPlayingInfo(fullPublish: false)
     }
 
     func setSpeed(_ rate: Float) {
@@ -211,6 +247,9 @@ final class AudioEngine: @unchecked Sendable {
             avPlayer?.rate = playbackRate
         } else {
             timePitchNode.rate = playbackRate
+        }
+        if playbackState == .playing {
+            updateNowPlayingInfo(fullPublish: false)
         }
     }
 
@@ -264,6 +303,211 @@ final class AudioEngine: @unchecked Sendable {
     private func persistPosition() {
         guard let episodeID = currentEpisodeID else { return }
         onPositionUpdate?(episodeID, currentPosition)
+    }
+
+    // MARK: - Interruption Handling
+
+    // MARK: - Route Change
+
+    private func handleRouteChange(_ notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,
+              let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue)
+        else { return }
+        guard reason == .oldDeviceUnavailable else { return }
+        guard playbackState == .playing else { return }
+        pause()
+    }
+
+    // MARK: - Remote Commands (lock screen / Control Center / AirPods)
+
+    private func setupRemoteCommands() {
+        let center = MPRemoteCommandCenter.shared()
+
+        center.playCommand.addTarget { [weak self] _ in
+            guard let self else { return .commandFailed }
+            guard self.playbackState == .paused else { return .commandFailed }
+            self.resume()
+            return .success
+        }
+
+        center.pauseCommand.addTarget { [weak self] _ in
+            guard let self else { return .commandFailed }
+            guard self.playbackState == .playing else { return .commandFailed }
+            self.pause()
+            return .success
+        }
+
+        center.togglePlayPauseCommand.addTarget { [weak self] _ in
+            guard let self else { return .commandFailed }
+            switch self.playbackState {
+            case .playing:
+                self.pause()
+                return .success
+            case .paused:
+                self.resume()
+                return .success
+            default:
+                return .commandFailed
+            }
+        }
+
+        center.skipForwardCommand.preferredIntervals = [30]
+        center.skipForwardCommand.addTarget { [weak self] _ in
+            guard let self, self.currentEpisodeID != nil else {
+                return .noActionableNowPlayingItem
+            }
+            try? self.skipForward(30)
+            return .success
+        }
+
+        center.skipBackwardCommand.preferredIntervals = [15]
+        center.skipBackwardCommand.addTarget { [weak self] _ in
+            guard let self, self.currentEpisodeID != nil else {
+                return .noActionableNowPlayingItem
+            }
+            try? self.skipBackward(15)
+            return .success
+        }
+
+        center.nextTrackCommand.addTarget { [weak self] _ in
+            guard let self, let store = self.dataStore else { return .noSuchContent }
+            let snapshot = store.queue
+            guard !snapshot.isEmpty else { return .noSuchContent }
+            guard let currentID = self.currentEpisodeID,
+                  let idx = snapshot.firstIndex(where: { $0.episode.id == currentID }),
+                  idx + 1 < snapshot.count
+            else { return .noSuchContent }
+            let nextID = snapshot[idx + 1].episode.id
+            do {
+                try store.moveEpisodeToTopAndPlay(nextID, audioEngine: self)
+                return .success
+            } catch {
+                return .commandFailed
+            }
+        }
+
+        center.changePlaybackPositionCommand.addTarget { [weak self] event in
+            guard let self else { return .commandFailed }
+            guard self.duration > 0 else { return .commandFailed }
+            guard let positionEvent = event as? MPChangePlaybackPositionCommandEvent else {
+                return .commandFailed
+            }
+            let clamped = min(max(positionEvent.positionTime, 0), self.duration)
+            try? self.seek(to: clamped)
+            return .success
+        }
+
+        // Disable defaults the system might otherwise auto-enable.
+        let disabled: [MPRemoteCommand] = [
+            center.previousTrackCommand,
+            center.seekForwardCommand,
+            center.seekBackwardCommand,
+            center.changeRepeatModeCommand,
+            center.changeShuffleModeCommand,
+            center.changePlaybackRateCommand,
+            center.ratingCommand,
+            center.likeCommand,
+            center.dislikeCommand,
+            center.bookmarkCommand
+        ]
+        for cmd in disabled { cmd.isEnabled = false }
+    }
+
+    // MARK: - Now Playing Info
+
+    /// Publish or update `MPNowPlayingInfoCenter.default().nowPlayingInfo`.
+    /// `fullPublish: true` rebuilds the dictionary from scratch (new episode);
+    /// `false` mutates the existing dictionary in place (rate/elapsed only).
+    /// Internal (not private) so the A1 unit test can drive the publish path
+    /// without bringing up an AVAudioEngine output chain in the simulator.
+    func updateNowPlayingInfo(fullPublish: Bool) {
+        guard let episodeID = currentEpisodeID else { return }
+        let center = MPNowPlayingInfoCenter.default()
+
+        if fullPublish {
+            // Clear first so no field bleeds from the previous episode.
+            center.nowPlayingInfo = nil
+
+            let podcast = dataStore?.currentPlayingPodcast(episodeID: episodeID)
+            let episodeTitle = dataStore?.inbox.first(where: { $0.episode.id == episodeID })?.episode.title
+                ?? dataStore?.queue.first(where: { $0.episode.id == episodeID })?.episode.title
+                ?? ""
+
+            var info: [String: Any] = [
+                MPMediaItemPropertyTitle: episodeTitle,
+                MPMediaItemPropertyArtist: podcast?.title ?? "",
+                MPMediaItemPropertyPlaybackDuration: duration as NSNumber,
+                MPNowPlayingInfoPropertyElapsedPlaybackTime: currentPosition as NSNumber,
+                MPNowPlayingInfoPropertyPlaybackRate: (playbackState == .playing ? playbackRate : 0.0) as NSNumber,
+                MPMediaItemPropertyMediaType: MPMediaType.podcast.rawValue as NSNumber
+            ]
+
+            // Synchronous artwork from cache if available.
+            if let urlString = podcast?.artworkURL, let cached = artworkCache[urlString] {
+                let size = cached.size
+                let artwork = MPMediaItemArtwork(boundsSize: size) { _ in cached }
+                info[MPMediaItemPropertyArtwork] = artwork
+            }
+
+            center.nowPlayingInfo = info
+
+            // Kick off async artwork load if cache missed.
+            if let urlString = podcast?.artworkURL,
+               artworkCache[urlString] == nil,
+               let url = URL(string: urlString) {
+                loadArtwork(url: url, episodeID: episodeID)
+            }
+        } else {
+            var info = center.nowPlayingInfo ?? [:]
+            info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = currentPosition as NSNumber
+            info[MPNowPlayingInfoPropertyPlaybackRate] = (playbackState == .playing ? playbackRate : 0.0) as NSNumber
+            center.nowPlayingInfo = info
+        }
+    }
+
+    func clearNowPlayingInfo() {
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+    }
+
+    private func loadArtwork(url: URL, episodeID: UUID) {
+        let urlString = url.absoluteString
+        Task.detached { [weak self] in
+            do {
+                let (data, response) = try await URLSession.shared.data(from: url)
+                if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                    self?.nowPlayingLogger.info("artwork HTTP \(http.statusCode) for \(urlString, privacy: .public)")
+                    return
+                }
+                guard let image = UIImage(data: data) else {
+                    self?.nowPlayingLogger.info("artwork decode failed for \(urlString, privacy: .public)")
+                    return
+                }
+                await MainActor.run {
+                    guard let self else { return }
+                    self.cacheArtwork(image, for: urlString)
+                    // Drop stale result if the episode changed mid-flight.
+                    guard self.currentEpisodeID == episodeID else { return }
+                    let center = MPNowPlayingInfoCenter.default()
+                    var info = center.nowPlayingInfo ?? [:]
+                    let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+                    info[MPMediaItemPropertyArtwork] = artwork
+                    center.nowPlayingInfo = info
+                }
+            } catch {
+                self?.nowPlayingLogger.info("artwork fetch failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
+    private func cacheArtwork(_ image: UIImage, for urlString: String) {
+        if artworkCache[urlString] != nil { return }
+        artworkCache[urlString] = image
+        artworkCacheOrder.append(urlString)
+        while artworkCacheOrder.count > artworkCacheLimit {
+            let evict = artworkCacheOrder.removeFirst()
+            artworkCache.removeValue(forKey: evict)
+        }
     }
 
     // MARK: - Interruption Handling

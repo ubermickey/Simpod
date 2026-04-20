@@ -138,13 +138,13 @@ struct MiniPlayerView: View {
         guard let episodeID = audioEngine.currentEpisodeID else {
             return ("Not Playing", "", nil)
         }
-        if let match = dataStore.inbox.first(where: { $0.episode.id == episodeID }) {
-            return (match.episode.title, match.podcast.title, match.podcast)
+        guard let podcast = dataStore.currentPlayingPodcast(episodeID: episodeID) else {
+            return ("Now Playing", "", nil)
         }
-        if let match = dataStore.queue.first(where: { $0.episode.id == episodeID }) {
-            return (match.episode.title, match.podcast.title, match.podcast)
-        }
-        return ("Now Playing", "", nil)
+        let title = dataStore.inbox.first(where: { $0.episode.id == episodeID })?.episode.title
+            ?? dataStore.queue.first(where: { $0.episode.id == episodeID })?.episode.title
+            ?? "Now Playing"
+        return (title, podcast.title, podcast)
     }
 
     private func playNextInQueue() {

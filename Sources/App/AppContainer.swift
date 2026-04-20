@@ -14,7 +14,7 @@ final class AppContainer {
     init() throws {
         self.dataStore = try DataStore.production()
         self.feedEngine = FeedEngine(dataStore: dataStore)
-        self.audioEngine = AudioEngine()
+        self.audioEngine = AudioEngine(dataStore: dataStore)
         self.downloadManager = DownloadManager()
         self.backgroundRefresh = BackgroundRefreshManager(feedEngine: feedEngine)
         self.syncEngine = SyncEngine(dataStore: dataStore)
@@ -36,7 +36,7 @@ final class AppContainer {
     private init(dataStore: DataStore) {
         self.dataStore = dataStore
         self.feedEngine = FeedEngine(dataStore: dataStore)
-        self.audioEngine = AudioEngine()
+        self.audioEngine = AudioEngine(dataStore: dataStore)
         self.downloadManager = DownloadManager()
         self.backgroundRefresh = BackgroundRefreshManager(feedEngine: feedEngine)
         self.syncEngine = SyncEngine(dataStore: dataStore)
