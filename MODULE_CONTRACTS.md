@@ -1,4 +1,4 @@
-# Module Contracts -- Simpod (DRAFT — pending Council ratification)
+# Module Contracts -- Simpod
 
 ## MODULE CONTRACT: FeedEngine
 
@@ -15,37 +15,42 @@ REQUIRES:
 
 INVARIANTS:
 - Never crashes on malformed RSS — returns partial data or descriptive error
-- Supports HTTP conditional GET (ETag/If-Modified-Since); skips download+parse on 304 Not Modified
-- Idempotent: refreshing twice with same feed data produces identical results
+- Supports HTTP conditional GET (ETag/If-Modified-Since); skips download+parse on 304
+- Body-hash (SHA-256) short-circuit: on `200 OK` with byte-identical body, skip parse and skip write
+- ETag-rot defense: never overwrites stored `httpETag` / `httpLastModified` with nil when server omits the header
+- `lastModified` bumped only when new episodes inserted OR `feedBodyHash` actually changed
+- Idempotent: refreshing twice with same feed data produces identical results and zero writes
 - os_signpost intervals for http-fetch, xml-parse, and refreshAll batch timing
 
 OWNER: Lane 1 (Feed + Audio Engine)
-STATUS: IN PROGRESS
+STATUS: IN PROGRESS (body-hash + ETag-rot defense shipped; adaptive scheduling deferred)
 
 ---
 
 ## MODULE CONTRACT: AudioEngine
 
 PROVIDES:
-- `play(episode: Episode) async`: Start/resume playback
-- `pause()`: Pause playback
-- `seek(to: TimeInterval)`: Seek to position
-- `currentPosition: TimeInterval`: Current playback position (observable)
-- `playbackState: PlaybackState`: .playing / .paused / .stopped / .loading (observable)
-- `setSpeed(rate: Float)`: Playback speed (0.5x - 3.0x)
+- `play(episode:)` / `pause()` / `resume()` / `stop()` / `seek(to:)` / `setSpeed(_:)` / `skipForward(_:)` / `skipBackward(_:)`
+- `currentPosition` / `duration` / `playbackRate` / `playbackState` (all observable)
+- `updateNowPlayingInfo(fullPublish:)` / `clearNowPlayingInfo()` — MediaPlayer surface; internal so tests can drive publish without an AVAudioEngine output chain
 
 REQUIRES:
-- AVFoundation framework
+- AVFoundation + MediaPlayer frameworks
 - Episode.localFileURL or Episode.streamURL
 - Background audio entitlement
+- Weak DataStore reference (for queue-aware next-track and artwork lookup)
 
 INVARIANTS:
 - Playback never silently fails — always transitions to an error state visible to UI
-- Position is persisted every 5 seconds (survives app termination)
+- Position is persisted on pause / resume / seek / stop (survives app termination)
 - Resumes correctly after phone call, Siri, or other audio interruption
+- Pauses only on `oldDeviceUnavailable` route changes (headphone unplug, AirPods removal) — never on `newDeviceAvailable`
+- MPNowPlayingInfoCenter full-publish on episode change; in-place rate/elapsed mutation on transport events; full clear on stop
+- Remote commands (play / pause / toggle / skip± / next / changePlaybackPosition) bound; unused defaults explicitly disabled
+- Artwork cache bounded to 8 FIFO entries; async load on miss never blocks the publish path
 
 OWNER: Lane 1 (Feed + Audio Engine)
-STATUS: DRAFT
+STATUS: IN PROGRESS (MediaPlayer + transport shipped; Smart Speed / Voice Boost DSP deferred)
 
 ---
 
@@ -89,7 +94,7 @@ PROVIDES:
 - `unhideExpiredEpisodes()`: Auto-unhide episodes past their reminder date
 
 REQUIRES:
-- Persistence framework (SwiftData or Core Data — Council decision)
+- GRDB / SQLite with DatabasePool (Council #1: 2026-04-14)
 - CloudKit integration point for SyncEngine
 
 INVARIANTS:
@@ -149,9 +154,9 @@ STATUS: DRAFT
 
 | Module | Provides | Requires | Invariants | Status |
 |--------|----------|----------|------------|--------|
-| FeedEngine | subscribe, refresh, refreshAll, importOPML | URLSession, FeedKit v10, DataStore | No crash on malformed RSS; conditional GET; idempotent | IN PROGRESS |
-| AudioEngine | play, pause, seek, speed, state | AVFoundation, Episode URLs | Never silent fail; position persisted | DRAFT |
+| FeedEngine | subscribe, refresh, refreshAll, importOPML | URLSession, FeedKit v10, DataStore, CryptoKit | Conditional GET; body-hash short-circuit; ETag-rot defense; no-op write skip; idempotent | IN PROGRESS |
+| AudioEngine | play/pause/resume/stop/seek/speed/skip±; Now Playing + remote commands | AVFoundation, MediaPlayer, weak DataStore, bg audio entitlement | Never silent fail; position persisted; route-change pause only on oldDeviceUnavailable; MediaPlayer publish/mutate/clear | IN PROGRESS |
 | DownloadManager | download, cancel, progress, delete | URLSession bg, file storage, DataStore | Bg downloads; resumable; queryable size | DRAFT |
-| DataStore | CRUD, tags, moveToTop/Bottom, hide/unhide, addToQueueAtTop | GRDB, CloudKit hook | Reads never block; queue consistent | DRAFT |
-| SyncEngine | syncNow, syncState, lastSync | CloudKit/CKSyncEngine, DataStore | No overwrite newer; auto-retry; restore | DRAFT |
+| DataStore | CRUD, tags, moveToTop/Bottom, hide/unhide, addToQueueAtTop, currentPlayingPodcast, moveEpisodeToTopAndPlay | GRDB DatabasePool, CloudKit hook | Reads never block; queue consistent; refresh writes elide on no-op | IN PROGRESS |
+| SyncEngine | syncNow, syncState, lastSync | CKSyncEngine, DataStore | No overwrite newer; auto-retry; restore | DRAFT |
 | InboxManager | triage, triageAll, inboxCount | DataStore | All episodes start in inbox; one-tap | DRAFT |

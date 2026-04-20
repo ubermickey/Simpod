@@ -1,4 +1,4 @@
-# Swim Lane Plan -- Simpod (DRAFT — pending Council ratification)
+# Swim Lane Plan -- Simpod
 
 ## Dependency DAG
 
@@ -24,16 +24,16 @@ Lane 4: DEPENDS ON Lanes 1, 2, 3 (sync point)
 - **Depends on**: Nothing — foundational lane
 - **Deliverable**: Headless podcast engine that can subscribe to feeds, download episodes, and play audio — no UI needed
 - **Completed**:
-  - FeedEngine: subscribe, refresh, refreshAll with bounded concurrency (max 4)
+  - FeedEngine: subscribe, refresh, refreshAll with bounded concurrency
   - HTTP conditional GET (ETag/If-Modified-Since) — skips re-download on 304
+  - Body-hash (SHA-256) short-circuit for Cloudflare-stripped ETag hosts; ETag-rot defense; no-op write skip (v5-feed-body-hash migration)
+  - Refresh pipeline: DatabasePool, concurrency 2, 15s per-feed timeout, read-first unhide, debounced inbox/queue observations
   - os_signpost instrumentation (http-fetch, xml-parse, refreshAll)
-  - Crash fixes: bounded concurrency, GRDB reentrant write fix, breadcrumbs
   - MetricKit diagnostics subscriber
+  - AudioEngine Now Playing (MPNowPlayingInfoCenter), remote commands (MPRemoteCommandCenter), route-change pause on oldDeviceUnavailable
 - **Remaining**:
-  - Lock screen controls (MPRemoteCommandCenter)
-  - Now Playing metadata (MPNowPlayingInfoCenter)
-  - Route change handling (headphone/BT disconnect → pause)
   - Background URLSession downloads
+  - Smart Speed / Voice Boost DSP
 - **Acceptance criteria**: 
   - Parse 10 real podcast feeds without failure
   - Download episode audio in background

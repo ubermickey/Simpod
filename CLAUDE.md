@@ -145,10 +145,10 @@ xcodebuild -project Simpod.xcodeproj -scheme SimpodTests -destination 'platform=
 
 | Module | Provides | Requires | Invariants | Status |
 |--------|----------|----------|------------|--------|
-| FeedEngine | subscribe, refresh, refreshAll, importOPML | URLSession, FeedKit v10, DataStore | No crash on malformed RSS; conditional GET (ETag/If-Modified-Since); idempotent | IN PROGRESS |
-| AudioEngine | play, pause, seek, speed, state | AVAudioEngine, Episode URLs | Never silent fail; position persisted | DRAFT |
+| FeedEngine | subscribe, refresh, refreshAll, importOPML | URLSession, FeedKit v10, DataStore, CryptoKit | Conditional GET; body-hash short-circuit; ETag-rot defense; no-op write skip; idempotent | IN PROGRESS |
+| AudioEngine | play/pause/resume/stop/seek/speed/skip±; Now Playing + remote commands | AVFoundation, MediaPlayer, weak DataStore | Never silent fail; position persisted; route-change pause only on oldDeviceUnavailable | IN PROGRESS |
 | DownloadManager | download, cancel, progress, delete | URLSession bg, file storage, DataStore | Bg downloads; resumable; queryable size | DRAFT |
-| DataStore | CRUD for all entities, tags | GRDB, CloudKit hook | Reads never block; queue consistent | DRAFT |
+| DataStore | CRUD, tags, moveToTop/Bottom, hide/unhide, currentPlayingPodcast, moveEpisodeToTopAndPlay | GRDB DatabasePool, CloudKit hook | Reads never block; queue consistent; refresh writes elide on no-op | IN PROGRESS |
 | SyncEngine | syncNow, syncState, lastSync | CKSyncEngine, DataStore | No overwrite newer; auto-retry; restore | DRAFT |
 | InboxManager | triage, triageAll, inboxCount | DataStore | All episodes start in inbox; one-tap | DRAFT |
 
@@ -174,6 +174,8 @@ xcodebuild -project Simpod.xcodeproj -scheme SimpodTests -destination 'platform=
 | Protocol-first modules | Modules/ | Each module exposes a protocol; implementations are swappable |
 | Sync-aware data model | Models/, DataStore | All entities carry sync metadata (timestamps, CKRecord mapping) |
 | HTTP conditional GET | FeedEngine | ETag/If-Modified-Since headers; 304 skips download+parse; validators stored on Podcast model |
+| Body-hash fallback | FeedEngine, Podcast.feedBodyHash | SHA-256 of response body short-circuits parse+write when byte-identical; handles Cloudflare-stripped ETag hosts |
+| Refresh no-op elision | DataStore.saveRefreshResult | Skips transaction entirely when refresh fields are unchanged — no ValueObservation fire, no CKSyncEngine push |
 | os_signpost instrumentation | FeedEngine | http-fetch, xml-parse, refreshAll intervals; zero overhead when Instruments not attached |
 | MetricKit diagnostics | DiagnosticsManager | Observability-only; logs 24h metric/diagnostic payloads; no functional behavior change |
 
