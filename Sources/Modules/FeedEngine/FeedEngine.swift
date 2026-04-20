@@ -16,6 +16,17 @@ final class FeedEngine: @unchecked Sendable {
     var refreshCompleted = 0
     var refreshingFeedTitle = ""
 
+    #if DEBUG
+    /// Monotonic count of refreshAll() invocations that observed a non-empty
+    /// snapshot. Unlike refreshTotal/refreshCompleted (which are reset to 0
+    /// in the defer block for live-progress UI), this counter is never reset,
+    /// so XCUITest can observe that a refresh actually ran.
+    var debugRefreshSnapshotCount: Int = 0
+    /// Monotonic count of refreshAll() completions (one increment per call
+    /// that proceeded past the isRefreshing guard).
+    var debugRefreshCompletions: Int = 0
+    #endif
+
     init(dataStore: DataStore) {
         self.dataStore = dataStore
     }
@@ -164,6 +175,9 @@ final class FeedEngine: @unchecked Sendable {
             refreshTotal = snapshot.count
             refreshCompleted = 0
             refreshingFeedTitle = ""
+            #if DEBUG
+            debugRefreshSnapshotCount = snapshot.count
+            #endif
         }
 
         let batchState = signposter.beginInterval("refreshAll", "\(snapshot.count) feeds")
@@ -194,6 +208,10 @@ final class FeedEngine: @unchecked Sendable {
         let notModifiedCount = results.values.filter { $0.isEmpty }.count
         let totalNew = results.values.map(\.count).reduce(0, +)
         logger.info("Refresh complete: \(results.count) feeds, \(notModifiedCount) unchanged, \(totalNew) new episodes")
+
+        #if DEBUG
+        await MainActor.run { debugRefreshCompletions += 1 }
+        #endif
 
         return results
     }

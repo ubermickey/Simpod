@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
+  <channel>
+    <title>Stub Feed 004</title>
+    <link>https://stub.example.com/feed-004</link>
+    <description>Deterministic stub feed for refresh-debounce UI tests.</description>
+    <language>en-us</language>
+    <itunes:author>Simpod Test Harness</itunes:author>
+    <item>
+      <title>Stub 004 Episode 1</title>
+      <guid isPermaLink="false">stub-004-ep-1</guid>
+      <pubDate>{{HOURS_AGO:1}}</pubDate>
+      <enclosure url="https://stub.example.com/feed-004/ep1.mp3" type="audio/mpeg" length="1000"/>
+      <description>Stub episode 1 for feed 004.</description>
+    </item>
+    <item>
+      <title>Stub 004 Episode 2</title>
+      <guid isPermaLink="false">stub-004-ep-2</guid>
+      <pubDate>{{HOURS_AGO:2}}</pubDate>
+      <enclosure url="https://stub.example.com/feed-004/ep2.mp3" type="audio/mpeg" length="1000"/>
+      <description>Stub episode 2 for feed 004.</description>
+    </item>
+    <item>
+      <title>Stub 004 Episode 3</title>
+      <guid isPermaLink="false">stub-004-ep-3</guid>
+      <pubDate>{{HOURS_AGO:3}}</pubDate>
+      <enclosure url="https://stub.example.com/feed-004/ep3.mp3" type="audio/mpeg" length="1000"/>
+      <description>Stub episode 3 for feed 004.</description>
+    </item>
+    <item>
+      <title>Stub 004 Episode 4</title>
+      <guid isPermaLink="false">stub-004-ep-4</guid>
+      <pubDate>{{HOURS_AGO:4}}</pubDate>
+      <enclosure url="https://stub.example.com/feed-004/ep4.mp3" type="audio/mpeg" length="1000"/>
+      <description>Stub episode 4 for feed 004.</description>
+    </item>
+    <item>
+      <title>Stub 004 Episode 5</title>
+      <guid isPermaLink="false">stub-004-ep-5</guid>
+      <pubDate>{{HOURS_AGO:5}}</pubDate>
+      <enclosure url="https://stub.example.com/feed-004/ep5.mp3" type="audio/mpeg" length="1000"/>
+      <description>Stub episode 5 for feed 004.</description>
+    </item>
+  </channel>
+</rss>

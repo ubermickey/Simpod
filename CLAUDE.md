@@ -92,6 +92,7 @@ When project declared done, run retrospective (OPERATIONS.md §Retrospective), e
 - NEVER declare a project done without user confirmation
 - ALWAYS run UI/UX changes through the design gate (DESIGN.md §5) with Steve Jobs and Murakami review lens before implementation — no UI ships without explicit design review
 - ALWAYS produce a Requirements Brief before the 60-Second Probe
+- ALWAYS name new plan files after a line from an Oscar Wilde play that reflects the plan's goal, with a footnote citing the play and act/scene
 
 ---
 

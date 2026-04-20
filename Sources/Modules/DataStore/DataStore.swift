@@ -18,6 +18,29 @@ final class DataStore: @unchecked Sendable {
     /// and re-filtering on every render (see plan §Change 2).
     var inboxCount: Int = 0
 
+    #if DEBUG
+    /// Suppresses the auto-refresh in ContentView's `.task` so a debug-driven
+    /// burst is the only refresh trigger during the deterministic UI test.
+    nonisolated(unsafe) static var suppressInitialAutoRefresh: Bool = false
+
+    /// Debounce window in ms for inbox/queue observations. Read once at type
+    /// initialization. Defaults to 50; overridable in DEBUG via the
+    /// `SIMPOD_DEBOUNCE_MS` env var (set 0 for the negative-control run).
+    /// In RELEASE this branch is stripped — the sink chain uses the literal
+    /// `.milliseconds(50)` exactly as in commit a1433c4.
+    static let debounceMilliseconds: Int = {
+        if let raw = ProcessInfo.processInfo.environment["SIMPOD_DEBOUNCE_MS"],
+           let ms = Int(raw) {
+            return ms
+        }
+        return 50
+    }()
+
+    var inboxSinkCount: Int = 0
+    var saveRefreshCount: Int = 0
+    var lastInboxPayloadCount: Int = 0
+    #endif
+
     init(db: any DatabaseWriter) throws {
         self.db = db
         try Self.migrate(db)
@@ -210,7 +233,11 @@ final class DataStore: @unchecked Sendable {
                     .fetchAll(db)
             }
             .publisher(in: db)
+            #if DEBUG
+            .debounce(for: .milliseconds(Self.debounceMilliseconds), scheduler: DispatchQueue.main)
+            #else
             .debounce(for: .milliseconds(50), scheduler: DispatchQueue.main)
+            #endif
             .sink(
                 receiveCompletion: { completion in
                     if case .failure(let error) = completion {
@@ -222,6 +249,10 @@ final class DataStore: @unchecked Sendable {
                     self.inbox = episodes
                     let cutoff = Date.now.addingTimeInterval(-Self.recentEpisodeCutoff)
                     self.inboxCount = episodes.filter { $0.episode.publishedDate >= cutoff }.count
+                    #if DEBUG
+                    self.inboxSinkCount += 1
+                    self.lastInboxPayloadCount = episodes.count
+                    #endif
                 }
             )
             .store(in: &self.combineCancellables)
@@ -235,7 +266,11 @@ final class DataStore: @unchecked Sendable {
                     .fetchAll(db)
             }
             .publisher(in: db)
+            #if DEBUG
+            .debounce(for: .milliseconds(Self.debounceMilliseconds), scheduler: DispatchQueue.main)
+            #else
             .debounce(for: .milliseconds(50), scheduler: DispatchQueue.main)
+            #endif
             .sink(
                 receiveCompletion: { completion in
                     if case .failure(let error) = completion {
@@ -363,6 +398,9 @@ final class DataStore: @unchecked Sendable {
             for episode in newEpisodes {
                 try episode.save(db)
             }
+            #if DEBUG
+            self.saveRefreshCount += 1
+            #endif
         }
     }
 
@@ -746,6 +784,62 @@ final class DataStore: @unchecked Sendable {
             try episode.update(db)
         }
     }
+
+    // MARK: - Debug / Test Hooks
+
+    /// Wipe all rows from podcast/episode/queueItem tables. Always-compiled
+    /// (so it can be called from a debug-gated env-var hook), but has no
+    /// production caller — verified by Scripts/check-debug-guards.sh §G-RELEASE.
+    func wipeAll() throws {
+        try db.write { db in
+            _ = try QueueItem.deleteAll(db)
+            _ = try Episode.deleteAll(db)
+            _ = try Podcast.deleteAll(db)
+        }
+    }
+
+    #if DEBUG
+    /// Insert N podcast rows whose feedURL resolves to StubFeedURLProtocol fixtures.
+    /// Used by the deterministic refresh-debounce UI test (plan §F.2).
+    func seedPodcasts(count: Int) throws {
+        try db.write { db in
+            for i in 1...count {
+                let n = String(format: "%03d", i)
+                let podcast = Podcast(
+                    feedURL: "stub://feed-\(n)",
+                    title: "Stub Feed \(n)"
+                )
+                try podcast.save(db)
+            }
+        }
+    }
+
+    /// Reset the inbox/saveRefresh debug counters to zero. Test calls this
+    /// just before triggering the burst so post-burst reads are unambiguous.
+    func resetDebugCounters() {
+        inboxSinkCount = 0
+        saveRefreshCount = 0
+        lastInboxPayloadCount = 0
+    }
+
+    /// Synchronous read of the inbox query, exposed for the debug panel's
+    /// three-way exact-match check (plan §H).
+    func debugInboxEpisodeCount() throws -> Int {
+        try db.read { db in
+            try Episode
+                .filter(
+                    Episode.Columns.status == EpisodeStatus.inbox.rawValue
+                    || (Episode.Columns.status == EpisodeStatus.hidden.rawValue
+                        && Episode.Columns.hiddenUntil <= Date.now)
+                )
+                .fetchCount(db)
+        }
+    }
+
+    func debugPodcastCount() throws -> Int {
+        try db.read { db in try Podcast.fetchCount(db) }
+    }
+    #endif
 
     /// Auto-unhide all episodes whose 24-hour hide period has passed (hiddenUntil <= now).
     /// Read-first: avoids opening an empty write transaction (which would re-fire
