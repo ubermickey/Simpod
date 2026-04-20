@@ -1,5 +1,6 @@
 import Foundation
 import FeedKit
+import CryptoKit
 import os
 
 private let logger = Logger(subsystem: "com.simpod", category: "FeedEngine")
@@ -33,8 +34,22 @@ final class FeedEngine: @unchecked Sendable {
 
     /// Subscribe to a podcast by its RSS feed URL.
     func subscribe(feedURL: String) async throws -> Podcast {
-        let result = try await fetchFeedData(urlString: feedURL, etag: nil, lastModified: nil)
-        guard case .fetched(let data, let etag, let lastModified) = result else {
+        let result = try await fetchFeedData(
+            urlString: feedURL,
+            etag: nil,
+            lastModified: nil,
+            knownBodyHash: nil
+        )
+        let data: Data
+        let etag: String?
+        let lastModified: String?
+        let bodyHash: String?
+        switch result {
+        case .changed(let d, let e, let lm, let h):
+            data = d; etag = e; lastModified = lm; bodyHash = h
+        case .notModified, .unchangedBody:
+            // Subscribe always passes nil validators, so the server has no
+            // basis for a 304 / hash-match. Treat either as protocol error.
             throw FeedError.invalidURL(feedURL)
         }
         let feed = try Feed(data: data)
@@ -42,6 +57,7 @@ final class FeedEngine: @unchecked Sendable {
         var podcast = mapToPodcast(feed, feedURL: feedURL)
         podcast.httpETag = etag
         podcast.httpLastModified = lastModified
+        podcast.feedBodyHash = bodyHash
         try dataStore.savePodcast(podcast)
 
         let episodes = mapToEpisodes(feed, podcastID: podcast.id)
@@ -51,6 +67,7 @@ final class FeedEngine: @unchecked Sendable {
     }
 
     /// Refresh a podcast feed and return new episodes.
+    /// Decision tree: see plan §"Refresh Decision Tree (Locked)".
     func refresh(podcast: Podcast) async throws -> [Episode] {
         logger.info("Refreshing feed: \(podcast.title, privacy: .public) — \(podcast.feedURL, privacy: .public)")
         UserDefaults.standard.set("\(podcast.title) — \(podcast.feedURL)", forKey: "com.simpod.crashBreadcrumb")
@@ -59,7 +76,8 @@ final class FeedEngine: @unchecked Sendable {
         let result = try await fetchFeedData(
             urlString: podcast.feedURL,
             etag: podcast.httpETag,
-            lastModified: podcast.httpLastModified
+            lastModified: podcast.httpLastModified,
+            knownBodyHash: podcast.feedBodyHash
         )
         signposter.endInterval("http-fetch", fetchState)
         UserDefaults.standard.removeObject(forKey: "com.simpod.crashBreadcrumb")
@@ -67,12 +85,17 @@ final class FeedEngine: @unchecked Sendable {
         switch result {
         case .notModified:
             logger.info("Feed not modified (304): \(podcast.title, privacy: .public)")
-            var updated = podcast
-            updated.lastRefreshed = .now
-            try dataStore.savePodcast(updated)
             return []
 
-        case .fetched(let data, let etag, let lastModified):
+        case .unchangedBody(let etag, let lastModified):
+            logger.info("Feed body unchanged (200, hash match): \(podcast.title, privacy: .public)")
+            let merged = podcast.merging(etag: etag, lastModified: lastModified)
+            if !merged.refreshFieldsEqual(podcast) {
+                try dataStore.saveRefreshResult(podcast: merged, newEpisodes: [])
+            }
+            return []
+
+        case .changed(let data, let etag, let lastModified, let newHash):
             let parseState = signposter.beginInterval("xml-parse", "\(podcast.title, privacy: .public)")
             let feed = try Feed(data: data)
             signposter.endInterval("xml-parse", parseState)
@@ -83,11 +106,14 @@ final class FeedEngine: @unchecked Sendable {
 
             let newEpisodes = episodes.filter { !existingGUIDs.contains($0.guid) }
 
-            var updated = podcast
-            updated.lastRefreshed = .now
-            updated.lastModified = .now
-            updated.httpETag = etag
-            updated.httpLastModified = lastModified
+            let parsedSnapshot = mapToPodcast(feed, feedURL: podcast.feedURL)
+            var updated = podcast.applyingParsed(parsedSnapshot)
+            updated.feedBodyHash = newHash
+            updated.httpETag = etag ?? podcast.httpETag
+            updated.httpLastModified = lastModified ?? podcast.httpLastModified
+            updated.lastModified = (newEpisodes.isEmpty && updated.contentEquals(podcast))
+                ? podcast.lastModified
+                : .now
             try dataStore.saveRefreshResult(podcast: updated, newEpisodes: newEpisodes)
 
             return newEpisodes
@@ -230,16 +256,32 @@ final class FeedEngine: @unchecked Sendable {
 
     // MARK: - HTTP Fetch
 
-    private enum FeedFetchResult {
+    enum FeedFetchResult: Sendable {
         case notModified
-        case fetched(data: Data, etag: String?, lastModified: String?)
+        case unchangedBody(etag: String?, lastModified: String?)
+        case changed(data: Data, etag: String?, lastModified: String?, hash: String)
     }
+
+    #if DEBUG
+    /// Test-only override that lets unit tests substitute a deterministic
+    /// fetch response without the real network. Set in test setUp; nil in
+    /// production. Verified absent from release by G-RELEASE script.
+    typealias FetchOverride = @Sendable (String, String?, String?, String?) async throws -> FeedFetchResult
+    nonisolated(unsafe) var debugFetchOverride: FetchOverride?
+    #endif
 
     private func fetchFeedData(
         urlString: String,
         etag: String?,
-        lastModified: String?
+        lastModified: String?,
+        knownBodyHash: String?
     ) async throws -> FeedFetchResult {
+        #if DEBUG
+        if let override = debugFetchOverride {
+            return try await override(urlString, etag, lastModified, knownBodyHash)
+        }
+        #endif
+
         guard let url = URL(string: urlString) else {
             throw FeedError.invalidURL(urlString)
         }
@@ -263,10 +305,12 @@ final class FeedEngine: @unchecked Sendable {
         switch httpResponse.statusCode {
         case 304:
             return .notModified
-        case 200...299:
-            return .fetched(data: data, etag: newETag, lastModified: newLastModified)
-        case 301, 308:
-            return .fetched(data: data, etag: newETag, lastModified: newLastModified)
+        case 200...299, 301, 308:
+            let bodyHash = Self.sha256Hex(data)
+            if let knownBodyHash, knownBodyHash == bodyHash {
+                return .unchangedBody(etag: newETag, lastModified: newLastModified)
+            }
+            return .changed(data: data, etag: newETag, lastModified: newLastModified, hash: bodyHash)
         case 404, 410:
             throw FeedError.feedGone(urlString)
         case 500...599:
@@ -274,6 +318,10 @@ final class FeedEngine: @unchecked Sendable {
         default:
             throw FeedError.httpError(urlString, httpResponse.statusCode)
         }
+    }
+
+    static func sha256Hex(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
     // MARK: - Feed Mapping

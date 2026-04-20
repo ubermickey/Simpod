@@ -192,6 +192,12 @@ final class DataStore: @unchecked Sendable {
             }
         }
 
+        migrator.registerMigration("v5-feed-body-hash") { db in
+            try db.alter(table: "podcast") { t in
+                t.add(column: "feedBodyHash", .text)
+            }
+        }
+
         try migrator.migrate(db)
     }
 
@@ -393,8 +399,17 @@ final class DataStore: @unchecked Sendable {
     }
 
     func saveRefreshResult(podcast: Podcast, newEpisodes: [Episode]) throws {
+        // No-op skip: if neither the podcast row nor any episode would be
+        // written, do not even open a write transaction. This prevents
+        // spurious ValueObservation fires (R1) and CKSyncEngine pushes (M2).
+        let stored = try db.read { db in try Podcast.fetchOne(db, id: podcast.id) }
+        let podcastChanged = stored.map { !$0.refreshFieldsEqual(podcast) } ?? true
+        guard podcastChanged || !newEpisodes.isEmpty else { return }
+
         try db.write { db in
-            try podcast.save(db)
+            if podcastChanged {
+                try podcast.save(db)
+            }
             for episode in newEpisodes {
                 try episode.save(db)
             }
@@ -861,6 +876,21 @@ final class DataStore: @unchecked Sendable {
                 try episode.update(db)
             }
         }
+    }
+}
+
+extension DataStore {
+    /// Single inbox-then-queue scan for the podcast that owns the given
+    /// episode. Used by MiniPlayerView and AudioEngine's Now Playing
+    /// publisher; keeping one helper prevents the two sites from drifting.
+    func currentPlayingPodcast(episodeID: UUID) -> Podcast? {
+        if let match = inbox.first(where: { $0.episode.id == episodeID }) {
+            return match.podcast
+        }
+        if let match = queue.first(where: { $0.episode.id == episodeID }) {
+            return match.podcast
+        }
+        return nil
     }
 }
 
