@@ -17,6 +17,7 @@ struct Episode: Identifiable, Codable, Sendable, FetchableRecord, PersistableRec
     var downloadProgress: Double
     var lastModified: Date
     var hiddenUntil: Date?
+    var cloudKitSystemFields: Data?
 
     static let podcast = belongsTo(Podcast.self)
 
@@ -34,7 +35,8 @@ struct Episode: Identifiable, Codable, Sendable, FetchableRecord, PersistableRec
         status: EpisodeStatus = .inbox,
         downloadProgress: Double = 0,
         lastModified: Date = .now,
-        hiddenUntil: Date? = nil
+        hiddenUntil: Date? = nil,
+        cloudKitSystemFields: Data? = nil
     ) {
         self.id = id
         self.podcastID = podcastID
@@ -50,6 +52,7 @@ struct Episode: Identifiable, Codable, Sendable, FetchableRecord, PersistableRec
         self.downloadProgress = downloadProgress
         self.lastModified = lastModified
         self.hiddenUntil = hiddenUntil
+        self.cloudKitSystemFields = cloudKitSystemFields
     }
 
     enum Columns {
@@ -61,6 +64,7 @@ struct Episode: Identifiable, Codable, Sendable, FetchableRecord, PersistableRec
         static let publishedDate = Column(CodingKeys.publishedDate)
         static let lastModified = Column(CodingKeys.lastModified)
         static let hiddenUntil = Column(CodingKeys.hiddenUntil)
+        static let cloudKitSystemFields = Column(CodingKeys.cloudKitSystemFields)
     }
 }
 

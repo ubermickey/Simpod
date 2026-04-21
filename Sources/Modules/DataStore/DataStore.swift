@@ -10,6 +10,11 @@ final class DataStore: @unchecked Sendable {
     private static let recentEpisodeCutoff: TimeInterval = 24 * 60 * 60 // 24 hours
     private let db: any DatabaseWriter
 
+    /// Set post-init by SimpodApp to wire DataStore mutations into SyncEngine.
+    /// `weak` to avoid a retain cycle with SyncEngine, which holds a strong
+    /// reference to DataStore.
+    weak var syncCoordinator: (any SyncCoordinator)?
+
     var podcasts: [Podcast] = []
     var inbox: [EpisodeWithPodcast] = []
     var queue: [QueueItemWithEpisodeAndPodcast] = []
@@ -198,6 +203,18 @@ final class DataStore: @unchecked Sendable {
             }
         }
 
+        migrator.registerMigration("v6-cloudkit-system-fields") { db in
+            try db.alter(table: "podcast") { t in
+                t.add(column: "cloudKitSystemFields", .blob)
+            }
+            try db.alter(table: "episode") { t in
+                t.add(column: "cloudKitSystemFields", .blob)
+            }
+            try db.alter(table: "queueItem") { t in
+                t.add(column: "cloudKitSystemFields", .blob)
+            }
+        }
+
         try migrator.migrate(db)
     }
 
@@ -330,12 +347,14 @@ final class DataStore: @unchecked Sendable {
         try db.write { db in
             try podcast.save(db)
         }
+        syncCoordinator?.markDirty(id: podcast.id)
     }
 
     func deletePodcast(_ podcast: Podcast) throws {
         try db.write { db in
             _ = try podcast.delete(db)
         }
+        syncCoordinator?.markDeleted(id: podcast.id)
     }
 
     func fetchPodcast(byFeedURL url: String) throws -> Podcast? {
@@ -350,6 +369,7 @@ final class DataStore: @unchecked Sendable {
         try db.write { db in
             try episode.save(db)
         }
+        syncCoordinator?.markDirty(id: episode.id)
     }
 
     func saveEpisodes(_ episodes: [Episode]) throws {
@@ -358,26 +378,35 @@ final class DataStore: @unchecked Sendable {
                 try episode.save(db)
             }
         }
+        for episode in episodes {
+            syncCoordinator?.markDirty(id: episode.id)
+        }
     }
 
     func updateEpisodeStatus(_ episodeID: UUID, status: EpisodeStatus) throws {
-        try db.write { db in
+        let didUpdate: Bool = try db.write { db in
             if var episode = try Episode.fetchOne(db, id: episodeID) {
                 episode.status = status
                 episode.lastModified = .now
                 try episode.update(db)
+                return true
             }
+            return false
         }
+        if didUpdate { syncCoordinator?.markDirty(id: episodeID) }
     }
 
     func updatePlaybackPosition(_ episodeID: UUID, position: TimeInterval) throws {
-        try db.write { db in
+        let didUpdate: Bool = try db.write { db in
             if var episode = try Episode.fetchOne(db, id: episodeID) {
                 episode.playbackPosition = position
                 episode.lastModified = .now
                 try episode.update(db)
+                return true
             }
+            return false
         }
+        if didUpdate { syncCoordinator?.markDirty(id: episodeID) }
     }
 
     func fetchEpisodes(for podcastID: UUID) throws -> [Episode] {
@@ -417,9 +446,16 @@ final class DataStore: @unchecked Sendable {
             self.saveRefreshCount += 1
             #endif
         }
+        // markDirty only for what was actually written. Refresh-time
+        // no-op (the early `guard` above) already returned without touching
+        // the sync layer, so v5's no-write quietude survives.
+        if podcastChanged { syncCoordinator?.markDirty(id: podcast.id) }
+        for episode in newEpisodes { syncCoordinator?.markDirty(id: episode.id) }
     }
 
     func updateLocalFilePath(_ episodeID: UUID, path: String?) throws {
+        // Sync skip: localFilePath is device-local, filtered out of
+        // ckRecord(for: Episode) at SyncEngine.swift:175. No markDirty.
         try db.write { db in
             if var episode = try Episode.fetchOne(db, id: episodeID) {
                 episode.localFilePath = path
@@ -432,39 +468,53 @@ final class DataStore: @unchecked Sendable {
     // MARK: - Queue Operations
 
     func addToQueue(episodeID: UUID) throws {
-        try db.write { db in
-            // Get next order position
+        let result: (queueItemID: UUID, episodeUpdated: Bool) = try db.write { db in
             let maxOrder = try QueueItem.select(max(QueueItem.Columns.order)).fetchOne(db) ?? -1
             let item = QueueItem(episodeID: episodeID, order: maxOrder + 1)
             try item.save(db)
 
-            // Update episode status
+            var episodeUpdated = false
             if var episode = try Episode.fetchOne(db, id: episodeID) {
                 episode.status = .queued
                 episode.lastModified = .now
                 try episode.update(db)
+                episodeUpdated = true
             }
+            return (item.id, episodeUpdated)
         }
+        syncCoordinator?.markDirty(id: result.queueItemID)
+        if result.episodeUpdated { syncCoordinator?.markDirty(id: episodeID) }
     }
 
     func removeFromQueue(episodeID: UUID) throws {
-        try db.write { db in
+        let removedIDs: [UUID] = try db.write { db in
+            let items = try QueueItem
+                .filter(QueueItem.Columns.episodeID == episodeID)
+                .fetchAll(db)
             _ = try QueueItem
                 .filter(QueueItem.Columns.episodeID == episodeID)
                 .deleteAll(db)
+            return items.map(\.id)
         }
+        for id in removedIDs { syncCoordinator?.markDeleted(id: id) }
     }
 
     func reorderQueue(itemIDs: [UUID]) throws {
-        try db.write { db in
+        let updatedIDs: [UUID] = try db.write { db in
+            var updated: [UUID] = []
             for (index, id) in itemIDs.enumerated() {
                 if var item = try QueueItem.fetchOne(db, id: id) {
-                    item.order = index
-                    item.lastModified = .now
-                    try item.update(db)
+                    if item.order != index {
+                        item.order = index
+                        item.lastModified = .now
+                        try item.update(db)
+                        updated.append(id)
+                    }
                 }
             }
+            return updated
         }
+        for id in updatedIDs { syncCoordinator?.markDirty(id: id) }
     }
 
     // MARK: - Inbox Operations
@@ -583,18 +633,58 @@ final class DataStore: @unchecked Sendable {
         try db.read { db in try QueueItem.fetchAll(db) }
     }
 
-    func saveFromSync(podcast: Podcast) throws {
-        try db.write { db in try podcast.save(db) }
+    /// Sync skip: inbound write path. Calling markDirty here would create
+    /// an upload loop with CKSyncEngine. Persists model fields and the
+    /// CloudKit system-fields blob in one transaction so a fetched record's
+    /// recordChangeTag is preserved for the next outbound save.
+    func saveFromSync(podcast: Podcast, systemFields: Data?) throws {
+        var copy = podcast
+        if let systemFields { copy.cloudKitSystemFields = systemFields }
+        try db.write { db in try copy.save(db) }
     }
 
-    func saveFromSync(episode: Episode) throws {
-        try db.write { db in try episode.save(db) }
+    func saveFromSync(episode: Episode, systemFields: Data?) throws {
+        var copy = episode
+        if let systemFields { copy.cloudKitSystemFields = systemFields }
+        try db.write { db in try copy.save(db) }
     }
 
-    func saveFromSync(queueItem: QueueItem) throws {
-        try db.write { db in try queueItem.save(db) }
+    func saveFromSync(queueItem: QueueItem, systemFields: Data?) throws {
+        var copy = queueItem
+        if let systemFields { copy.cloudKitSystemFields = systemFields }
+        try db.write { db in try copy.save(db) }
     }
 
+    /// Persist a CloudKit system-fields blob alone (no model field changes).
+    /// Called from SyncEngine after a successful upload echo. Sync skip — never
+    /// triggers markDirty (would loop). Uses the model's Codable filter to
+    /// match the same UUID encoding GRDB used at insert time.
+    func saveSystemFields(podcastID: UUID, data: Data) throws {
+        try db.write { db in
+            try Podcast
+                .filter(Podcast.Columns.id == podcastID)
+                .updateAll(db, [Podcast.Columns.cloudKitSystemFields.set(to: data)])
+        }
+    }
+
+    func saveSystemFields(episodeID: UUID, data: Data) throws {
+        try db.write { db in
+            try Episode
+                .filter(Episode.Columns.id == episodeID)
+                .updateAll(db, [Episode.Columns.cloudKitSystemFields.set(to: data)])
+        }
+    }
+
+    func saveSystemFields(queueItemID: UUID, data: Data) throws {
+        try db.write { db in
+            try QueueItem
+                .filter(QueueItem.Columns.id == queueItemID)
+                .updateAll(db, [QueueItem.Columns.cloudKitSystemFields.set(to: data)])
+        }
+    }
+
+    /// Sync skip: only invoked by inbound applyDeletion. UI deletes go through
+    /// typed wrappers (deletePodcast, etc.), which mark dirty/deleted themselves.
     func deleteByID<T: FetchableRecord & PersistableRecord & Identifiable>(
         _ type: T.Type, id: T.ID
     ) throws where T.ID: DatabaseValueConvertible {
@@ -605,99 +695,125 @@ final class DataStore: @unchecked Sendable {
 
     /// Move an existing queue item to position 0 (play next), normalizing all orders.
     func moveToTop(episodeID: UUID) throws {
-        try db.write { db in
+        let dirtyIDs: [UUID] = try db.write { db in
             var items = try QueueItem
                 .order(QueueItem.Columns.order)
                 .fetchAll(db)
 
-            guard let idx = items.firstIndex(where: { $0.episodeID == episodeID }) else { return }
+            guard let idx = items.firstIndex(where: { $0.episodeID == episodeID }) else { return [] }
 
             let item = items.remove(at: idx)
             items.insert(item, at: 0)
 
+            var dirty: [UUID] = []
             for (index, var qi) in items.enumerated() {
-                qi.order = index
-                qi.lastModified = .now
-                try qi.update(db)
+                if qi.order != index {
+                    qi.order = index
+                    qi.lastModified = .now
+                    try qi.update(db)
+                    dirty.append(qi.id)
+                }
             }
+            return dirty
         }
+        for id in dirtyIDs { syncCoordinator?.markDirty(id: id) }
     }
 
     /// Move an existing queue item to the last position, normalizing all orders.
     func moveToBottom(episodeID: UUID) throws {
-        try db.write { db in
+        let dirtyIDs: [UUID] = try db.write { db in
             var items = try QueueItem
                 .order(QueueItem.Columns.order)
                 .fetchAll(db)
 
-            guard let idx = items.firstIndex(where: { $0.episodeID == episodeID }) else { return }
+            guard let idx = items.firstIndex(where: { $0.episodeID == episodeID }) else { return [] }
 
             let item = items.remove(at: idx)
             items.append(item)
 
+            var dirty: [UUID] = []
             for (index, var qi) in items.enumerated() {
-                qi.order = index
-                qi.lastModified = .now
-                try qi.update(db)
+                if qi.order != index {
+                    qi.order = index
+                    qi.lastModified = .now
+                    try qi.update(db)
+                    dirty.append(qi.id)
+                }
             }
+            return dirty
         }
+        for id in dirtyIDs { syncCoordinator?.markDirty(id: id) }
     }
 
     /// Add a NEW episode to the queue at position 0, shifting all existing items down.
     func addToQueueAtTop(episodeID: UUID) throws {
-        try db.write { db in
-            // Shift all existing queue items' order up by 1
+        let result: (queueDirty: [UUID], episodeUpdated: Bool) = try db.write { db in
             let existing = try QueueItem
                 .order(QueueItem.Columns.order)
                 .fetchAll(db)
 
+            var dirty: [UUID] = []
             for var qi in existing {
                 qi.order += 1
                 qi.lastModified = .now
                 try qi.update(db)
+                dirty.append(qi.id)
             }
 
-            // Insert new item at position 0
             let newItem = QueueItem(episodeID: episodeID, order: 0)
             try newItem.save(db)
+            dirty.append(newItem.id)
 
-            // Update episode status
+            var episodeUpdated = false
             if var episode = try Episode.fetchOne(db, id: episodeID) {
                 episode.status = .queued
                 episode.lastModified = .now
                 try episode.update(db)
+                episodeUpdated = true
             }
+            return (dirty, episodeUpdated)
         }
+        for id in result.queueDirty { syncCoordinator?.markDirty(id: id) }
+        if result.episodeUpdated { syncCoordinator?.markDirty(id: episodeID) }
     }
 
     /// Hide an episode for 24 hours. Removes it from the queue if present.
     func hideEpisode(_ episodeID: UUID) throws {
-        try db.write { db in
-            // Remove from queue if present
+        let result: (deletedQueueIDs: [UUID], episodeUpdated: Bool) = try db.write { db in
+            let removedItems = try QueueItem
+                .filter(QueueItem.Columns.episodeID == episodeID)
+                .fetchAll(db)
             _ = try QueueItem
                 .filter(QueueItem.Columns.episodeID == episodeID)
                 .deleteAll(db)
 
-            // Set status to hidden with a 24-hour reminder
+            var episodeUpdated = false
             if var episode = try Episode.fetchOne(db, id: episodeID) {
                 episode.status = .hidden
                 episode.hiddenUntil = Date.now + 86400
                 episode.lastModified = .now
                 try episode.update(db)
+                episodeUpdated = true
             }
+            return (removedItems.map(\.id), episodeUpdated)
         }
+        for id in result.deletedQueueIDs { syncCoordinator?.markDeleted(id: id) }
+        if result.episodeUpdated { syncCoordinator?.markDirty(id: episodeID) }
     }
 
     /// Return a hidden episode to the inbox, clearing the reminder date.
     func unhideEpisode(_ episodeID: UUID) throws {
-        try db.write { db in
+        let didUpdate: Bool = try db.write { db in
             if var episode = try Episode.fetchOne(db, id: episodeID) {
                 episode.status = .inbox
                 episode.hiddenUntil = nil
                 episode.lastModified = .now
                 try episode.update(db)
+                return true
             }
+            return false
         }
+        if didUpdate { syncCoordinator?.markDirty(id: episodeID) }
     }
 
     // MARK: - Playback Continuity
@@ -707,13 +823,24 @@ final class DataStore: @unchecked Sendable {
     /// Audio engine calls occur AFTER the db.write transaction commits
     /// to prevent reentrant writes (AudioEngine.stop → persistPosition → db.write).
     func moveEpisodeToTopAndPlay(_ episodeID: UUID, audioEngine: AudioEngine) throws {
-        let playbackInfo: (url: URL, isLocal: Bool, position: TimeInterval)? = try db.write { db in
-            // Remove existing queue entry if present (deduplicate)
+        struct WriteResult {
+            var playbackInfo: (url: URL, isLocal: Bool, position: TimeInterval)?
+            var dirtyQueueIDs: [UUID] = []
+            var deletedQueueIDs: [UUID] = []
+            var episodeUpdated: Bool = false
+        }
+
+        let result: WriteResult = try db.write { db in
+            var out = WriteResult()
+
+            let removed = try QueueItem
+                .filter(QueueItem.Columns.episodeID == episodeID)
+                .fetchAll(db)
             _ = try QueueItem
                 .filter(QueueItem.Columns.episodeID == episodeID)
                 .deleteAll(db)
+            out.deletedQueueIDs = removed.map(\.id)
 
-            // Shift all existing queue items down by 1
             let existing = try QueueItem
                 .order(QueueItem.Columns.order)
                 .fetchAll(db)
@@ -722,30 +849,34 @@ final class DataStore: @unchecked Sendable {
                 qi.order += 1
                 qi.lastModified = .now
                 try qi.update(db)
+                out.dirtyQueueIDs.append(qi.id)
             }
 
-            // Insert at position 0
             let newItem = QueueItem(episodeID: episodeID, order: 0)
             try newItem.save(db)
+            out.dirtyQueueIDs.append(newItem.id)
 
-            // Update episode status and collect playback info
             if var episode = try Episode.fetchOne(db, id: episodeID) {
                 episode.status = .queued
                 episode.lastModified = .now
                 try episode.update(db)
+                out.episodeUpdated = true
 
                 if let localPath = episode.localFilePath,
                    let fileURL = URL(string: localPath) ?? URL(fileURLWithPath: localPath) as URL? {
-                    return (url: fileURL, isLocal: true, position: episode.playbackPosition)
+                    out.playbackInfo = (url: fileURL, isLocal: true, position: episode.playbackPosition)
                 } else if let remoteURL = URL(string: episode.audioURL) {
-                    return (url: remoteURL, isLocal: false, position: episode.playbackPosition)
+                    out.playbackInfo = (url: remoteURL, isLocal: false, position: episode.playbackPosition)
                 }
             }
-            return nil
+            return out
         }
 
-        // Start playback outside the transaction
-        if let info = playbackInfo {
+        for id in result.deletedQueueIDs { syncCoordinator?.markDeleted(id: id) }
+        for id in result.dirtyQueueIDs { syncCoordinator?.markDirty(id: id) }
+        if result.episodeUpdated { syncCoordinator?.markDirty(id: episodeID) }
+
+        if let info = result.playbackInfo {
             if info.isLocal {
                 try audioEngine.play(fileURL: info.url, episodeID: episodeID, startPosition: info.position)
             } else {
@@ -757,47 +888,46 @@ final class DataStore: @unchecked Sendable {
     /// Append one random eligible unplayed episode from the last 24 hours to the queue,
     /// but only if no next queue item exists after the currently playing one.
     func appendRandomRecentUnplayedEpisodeIfNeeded(currentlyPlayingID: UUID?) throws {
-        try db.write { db in
+        let dirty: (queueItemID: UUID?, episodeID: UUID?) = try db.write { db in
             let items = try QueueItem
                 .order(QueueItem.Columns.order)
                 .fetchAll(db)
 
-            // Check if a next item exists after the currently playing one
             if let playingID = currentlyPlayingID,
                let currentIndex = items.firstIndex(where: { $0.episodeID == playingID }),
                currentIndex + 1 < items.count {
-                return // Next item exists, no refill needed
+                return (nil, nil)
             }
 
             let currentQueueEpisodeIDs = items.map(\.episodeID)
             let cutoff = Date.now.addingTimeInterval(-86400)
 
-            // Find eligible episodes: published <24h ago, inbox status, strictly unplayed, not in queue, not playing
             var candidates = try Episode
                 .filter(Episode.Columns.publishedDate > cutoff)
                 .filter(Episode.Columns.status == EpisodeStatus.inbox.rawValue)
                 .filter(Episode.Columns.playbackPosition == 0)
                 .fetchAll(db)
 
-            // Exclude episodes already in queue and currently playing
             candidates = candidates.filter { ep in
                 !currentQueueEpisodeIDs.contains(ep.id) && ep.id != currentlyPlayingID
             }
 
-            guard !candidates.isEmpty else { return }
+            guard !candidates.isEmpty else { return (nil, nil) }
 
-            // Random selection
             let picked = candidates.randomElement()!
             let maxOrder = items.last?.order ?? -1
             let newItem = QueueItem(episodeID: picked.id, order: maxOrder + 1)
             try newItem.save(db)
 
-            // Update status to queued
             var episode = picked
             episode.status = .queued
             episode.lastModified = .now
             try episode.update(db)
+
+            return (newItem.id, picked.id)
         }
+        if let qid = dirty.queueItemID { syncCoordinator?.markDirty(id: qid) }
+        if let eid = dirty.episodeID { syncCoordinator?.markDirty(id: eid) }
     }
 
     // MARK: - Debug / Test Hooks
@@ -806,11 +936,18 @@ final class DataStore: @unchecked Sendable {
     /// (so it can be called from a debug-gated env-var hook), but has no
     /// production caller — verified by Scripts/check-debug-guards.sh §G-RELEASE.
     func wipeAll() throws {
-        try db.write { db in
+        let deleted: (queueIDs: [UUID], episodeIDs: [UUID], podcastIDs: [UUID]) = try db.write { db in
+            let qids = try QueueItem.fetchAll(db).map(\.id)
+            let eids = try Episode.fetchAll(db).map(\.id)
+            let pids = try Podcast.fetchAll(db).map(\.id)
             _ = try QueueItem.deleteAll(db)
             _ = try Episode.deleteAll(db)
             _ = try Podcast.deleteAll(db)
+            return (qids, eids, pids)
         }
+        for id in deleted.queueIDs { syncCoordinator?.markDeleted(id: id) }
+        for id in deleted.episodeIDs { syncCoordinator?.markDeleted(id: id) }
+        for id in deleted.podcastIDs { syncCoordinator?.markDeleted(id: id) }
     }
 
     #if DEBUG
@@ -876,6 +1013,7 @@ final class DataStore: @unchecked Sendable {
                 try episode.update(db)
             }
         }
+        for episode in toUnhide { syncCoordinator?.markDirty(id: episode.id) }
     }
 }
 

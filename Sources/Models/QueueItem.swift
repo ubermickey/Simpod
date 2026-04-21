@@ -8,6 +8,7 @@ struct QueueItem: Identifiable, Codable, Sendable, FetchableRecord, PersistableR
     var order: Int
     var addedDate: Date
     var lastModified: Date
+    var cloudKitSystemFields: Data?
 
     static let episode = belongsTo(Episode.self)
 
@@ -16,13 +17,15 @@ struct QueueItem: Identifiable, Codable, Sendable, FetchableRecord, PersistableR
         episodeID: UUID,
         order: Int,
         addedDate: Date = .now,
-        lastModified: Date = .now
+        lastModified: Date = .now,
+        cloudKitSystemFields: Data? = nil
     ) {
         self.id = id
         self.episodeID = episodeID
         self.order = order
         self.addedDate = addedDate
         self.lastModified = lastModified
+        self.cloudKitSystemFields = cloudKitSystemFields
     }
 
     enum Columns {
@@ -30,5 +33,6 @@ struct QueueItem: Identifiable, Codable, Sendable, FetchableRecord, PersistableR
         static let episodeID = Column(CodingKeys.episodeID)
         static let order = Column(CodingKeys.order)
         static let lastModified = Column(CodingKeys.lastModified)
+        static let cloudKitSystemFields = Column(CodingKeys.cloudKitSystemFields)
     }
 }

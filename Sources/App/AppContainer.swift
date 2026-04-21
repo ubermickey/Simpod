@@ -20,6 +20,9 @@ final class AppContainer {
         self.syncEngine = SyncEngine(dataStore: dataStore)
         self.diagnostics = DiagnosticsManager()
 
+        // Wire DataStore → SyncEngine seam so local mutations enqueue uploads.
+        dataStore.syncCoordinator = syncEngine
+
         diagnostics.start()
 
         // Wire position persistence
@@ -41,5 +44,7 @@ final class AppContainer {
         self.backgroundRefresh = BackgroundRefreshManager(feedEngine: feedEngine)
         self.syncEngine = SyncEngine(dataStore: dataStore)
         self.diagnostics = DiagnosticsManager()
+
+        dataStore.syncCoordinator = syncEngine
     }
 }

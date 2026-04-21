@@ -14,6 +14,7 @@ struct Podcast: Identifiable, Codable, Sendable, FetchableRecord, PersistableRec
     var httpETag: String?
     var httpLastModified: String?
     var feedBodyHash: String?
+    var cloudKitSystemFields: Data?
 
     static let episodes = hasMany(Episode.self)
 
@@ -28,7 +29,8 @@ struct Podcast: Identifiable, Codable, Sendable, FetchableRecord, PersistableRec
         lastModified: Date = .now,
         httpETag: String? = nil,
         httpLastModified: String? = nil,
-        feedBodyHash: String? = nil
+        feedBodyHash: String? = nil,
+        cloudKitSystemFields: Data? = nil
     ) {
         self.id = id
         self.feedURL = feedURL
@@ -41,6 +43,7 @@ struct Podcast: Identifiable, Codable, Sendable, FetchableRecord, PersistableRec
         self.httpETag = httpETag
         self.httpLastModified = httpLastModified
         self.feedBodyHash = feedBodyHash
+        self.cloudKitSystemFields = cloudKitSystemFields
     }
 
     enum Columns {
@@ -52,6 +55,7 @@ struct Podcast: Identifiable, Codable, Sendable, FetchableRecord, PersistableRec
         static let httpETag = Column(CodingKeys.httpETag)
         static let httpLastModified = Column(CodingKeys.httpLastModified)
         static let feedBodyHash = Column(CodingKeys.feedBodyHash)
+        static let cloudKitSystemFields = Column(CodingKeys.cloudKitSystemFields)
     }
 }
 

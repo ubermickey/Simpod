@@ -16,7 +16,7 @@ enum SyncState: Sendable {
 /// Invariant: No overwrite of newer local data; auto-retries on transient failures.
 /// Degrades gracefully when CloudKit is unavailable (no account, simulator, no entitlement).
 @Observable
-final class SyncEngine: @unchecked Sendable {
+final class SyncEngine: SyncCoordinator, @unchecked Sendable {
 
     // MARK: - Observable State
 
@@ -55,6 +55,14 @@ final class SyncEngine: @unchecked Sendable {
         Task.detached { [self] in
             self.setupEngine()
         }
+    }
+
+    /// Test-only initializer: skips CKSyncEngine setup so tests can exercise
+    /// pure encode/decode/apply paths without standing up a real engine.
+    /// `engine` remains nil; markDirty/markDeleted/fetchNow/sendNow are no-ops.
+    internal init(dataStore: DataStore, skipCKSetup: Bool) {
+        self.dataStore = dataStore
+        _ = skipCKSetup
     }
 
     // MARK: - Public API
@@ -144,9 +152,35 @@ final class SyncEngine: @unchecked Sendable {
 
     // MARK: - CKRecord Mapping: Models → CKRecord
 
-    private func ckRecord(for podcast: Podcast) -> CKRecord {
-        let recordID = CKRecord.ID(recordName: podcast.id.uuidString, zoneID: Self.zoneID)
-        let record = CKRecord(recordType: RecordType.podcast, recordID: recordID)
+    /// Rehydrate a CKRecord from a stored encodedSystemFields blob, or nil if
+    /// the blob is absent / unparseable. Preserving recordChangeTag is what
+    /// keeps CKSyncEngine from raising serverRecordChanged on every second save.
+    private static func rehydrate(systemFields: Data?) -> CKRecord? {
+        guard let systemFields else { return nil }
+        do {
+            let coder = try NSKeyedUnarchiver(forReadingFrom: systemFields)
+            coder.requiresSecureCoding = true
+            let record = CKRecord(coder: coder)
+            coder.finishDecoding()
+            return record
+        } catch {
+            print("[SyncEngine] Failed to rehydrate CKRecord from systemFields: \(error)")
+            return nil
+        }
+    }
+
+    /// Encode a CKRecord's system fields into a Data blob suitable for storage.
+    private static func encodeSystemFields(_ record: CKRecord) -> Data {
+        let coder = NSKeyedArchiver(requiringSecureCoding: true)
+        record.encodeSystemFields(with: coder)
+        return coder.encodedData
+    }
+
+    internal func ckRecord(for podcast: Podcast) -> CKRecord {
+        let record = Self.rehydrate(systemFields: podcast.cloudKitSystemFields) ?? {
+            let recordID = CKRecord.ID(recordName: podcast.id.uuidString, zoneID: Self.zoneID)
+            return CKRecord(recordType: RecordType.podcast, recordID: recordID)
+        }()
         record["feedURL"] = podcast.feedURL as CKRecordValue
         record["title"] = podcast.title as CKRecordValue
         record["author"] = podcast.author as CKRecordValue
@@ -159,9 +193,11 @@ final class SyncEngine: @unchecked Sendable {
         return record
     }
 
-    private func ckRecord(for episode: Episode) -> CKRecord {
-        let recordID = CKRecord.ID(recordName: episode.id.uuidString, zoneID: Self.zoneID)
-        let record = CKRecord(recordType: RecordType.episode, recordID: recordID)
+    internal func ckRecord(for episode: Episode) -> CKRecord {
+        let record = Self.rehydrate(systemFields: episode.cloudKitSystemFields) ?? {
+            let recordID = CKRecord.ID(recordName: episode.id.uuidString, zoneID: Self.zoneID)
+            return CKRecord(recordType: RecordType.episode, recordID: recordID)
+        }()
         record["podcastID"] = episode.podcastID.uuidString as CKRecordValue
         record["guid"] = episode.guid as CKRecordValue
         record["title"] = episode.title as CKRecordValue
@@ -176,9 +212,11 @@ final class SyncEngine: @unchecked Sendable {
         return record
     }
 
-    private func ckRecord(for item: QueueItem) -> CKRecord {
-        let recordID = CKRecord.ID(recordName: item.id.uuidString, zoneID: Self.zoneID)
-        let record = CKRecord(recordType: RecordType.queueItem, recordID: recordID)
+    internal func ckRecord(for item: QueueItem) -> CKRecord {
+        let record = Self.rehydrate(systemFields: item.cloudKitSystemFields) ?? {
+            let recordID = CKRecord.ID(recordName: item.id.uuidString, zoneID: Self.zoneID)
+            return CKRecord(recordType: RecordType.queueItem, recordID: recordID)
+        }()
         record["episodeID"] = item.episodeID.uuidString as CKRecordValue
         record["order"] = item.order as CKRecordValue
         record["addedDate"] = item.addedDate as CKRecordValue
@@ -189,7 +227,7 @@ final class SyncEngine: @unchecked Sendable {
     /// Resolve a pending save change to a CKRecord by looking up the entity in DataStore.
     /// Returns nil if the entity no longer exists (it was deleted locally), causing the
     /// batch initializer to skip that change.
-    private func resolveRecord(for recordID: CKRecord.ID) -> CKRecord? {
+    internal func resolveRecord(for recordID: CKRecord.ID) -> CKRecord? {
         guard let uuid = UUID(uuidString: recordID.recordName) else {
             print("[SyncEngine] Cannot parse UUID from recordName: \(recordID.recordName)")
             return nil
@@ -211,7 +249,7 @@ final class SyncEngine: @unchecked Sendable {
 
     // MARK: - CKRecord Mapping: CKRecord → Models
 
-    private func podcast(from record: CKRecord) -> Podcast? {
+    internal func podcast(from record: CKRecord) -> Podcast? {
         guard
             let id = UUID(uuidString: record.recordID.recordName),
             let feedURL = record["feedURL"] as? String,
@@ -231,7 +269,7 @@ final class SyncEngine: @unchecked Sendable {
         )
     }
 
-    private func episode(from record: CKRecord) -> Episode? {
+    internal func episode(from record: CKRecord) -> Episode? {
         guard
             let id = UUID(uuidString: record.recordID.recordName),
             let podcastIDString = record["podcastID"] as? String,
@@ -262,7 +300,7 @@ final class SyncEngine: @unchecked Sendable {
         )
     }
 
-    private func queueItem(from record: CKRecord) -> QueueItem? {
+    internal func queueItem(from record: CKRecord) -> QueueItem? {
         guard
             let id = UUID(uuidString: record.recordID.recordName),
             let episodeIDString = record["episodeID"] as? String,
@@ -283,8 +321,9 @@ final class SyncEngine: @unchecked Sendable {
 
     // MARK: - Apply Fetched Record (latest-write-wins)
 
-    private func applyFetchedRecord(_ record: CKRecord) {
+    internal func applyFetchedRecord(_ record: CKRecord) {
         let recordType = record.recordType
+        let systemFields = Self.encodeSystemFields(record)
 
         do {
             switch recordType {
@@ -295,10 +334,14 @@ final class SyncEngine: @unchecked Sendable {
                 }
                 if let existing = try dataStore.fetchPodcast(byID: incoming.id) {
                     if incoming.lastModified > existing.lastModified {
-                        try dataStore.saveFromSync(podcast: incoming)
+                        try dataStore.saveFromSync(podcast: incoming, systemFields: systemFields)
+                    } else {
+                        // Local row wins on fields, but the server's systemFields blob is
+                        // still authoritative for CKSyncEngine bookkeeping — refresh it.
+                        try dataStore.saveSystemFields(podcastID: incoming.id, data: systemFields)
                     }
                 } else {
-                    try dataStore.saveFromSync(podcast: incoming)
+                    try dataStore.saveFromSync(podcast: incoming, systemFields: systemFields)
                 }
 
             case RecordType.episode:
@@ -312,10 +355,12 @@ final class SyncEngine: @unchecked Sendable {
                         var merged = incoming
                         merged.localFilePath = existing.localFilePath
                         merged.downloadProgress = existing.downloadProgress
-                        try dataStore.saveFromSync(episode: merged)
+                        try dataStore.saveFromSync(episode: merged, systemFields: systemFields)
+                    } else {
+                        try dataStore.saveSystemFields(episodeID: incoming.id, data: systemFields)
                     }
                 } else {
-                    try dataStore.saveFromSync(episode: incoming)
+                    try dataStore.saveFromSync(episode: incoming, systemFields: systemFields)
                 }
 
             case RecordType.queueItem:
@@ -325,10 +370,12 @@ final class SyncEngine: @unchecked Sendable {
                 }
                 if let existing = try dataStore.fetchQueueItem(byID: incoming.id) {
                     if incoming.lastModified > existing.lastModified {
-                        try dataStore.saveFromSync(queueItem: incoming)
+                        try dataStore.saveFromSync(queueItem: incoming, systemFields: systemFields)
+                    } else {
+                        try dataStore.saveSystemFields(queueItemID: incoming.id, data: systemFields)
                     }
                 } else {
-                    try dataStore.saveFromSync(queueItem: incoming)
+                    try dataStore.saveFromSync(queueItem: incoming, systemFields: systemFields)
                 }
 
             default:
@@ -360,6 +407,35 @@ final class SyncEngine: @unchecked Sendable {
             }
         } catch {
             print("[SyncEngine] Error deleting record \(recordID.recordName): \(error)")
+        }
+    }
+
+    // MARK: - Persist System Fields (success echo)
+
+    /// Re-encode and store the server's updated systemFields blob after a successful upload.
+    /// This is the outbound complement to applyFetchedRecord's inbound systemFields capture —
+    /// it closes the loop for first-ever uploads, where the entity had no server identity until now.
+    /// Bypasses markDirty (would loop). Unknown record types are silently ignored — the only
+    /// types we ever upload are Podcast/Episode/QueueItem.
+    private func persistSystemFields(for record: CKRecord) {
+        let blob = Self.encodeSystemFields(record)
+        guard let uuid = UUID(uuidString: record.recordID.recordName) else {
+            print("[SyncEngine] Cannot parse UUID from saved recordName: \(record.recordID.recordName)")
+            return
+        }
+        do {
+            switch record.recordType {
+            case RecordType.podcast:
+                try dataStore.saveSystemFields(podcastID: uuid, data: blob)
+            case RecordType.episode:
+                try dataStore.saveSystemFields(episodeID: uuid, data: blob)
+            case RecordType.queueItem:
+                try dataStore.saveSystemFields(queueItemID: uuid, data: blob)
+            default:
+                print("[SyncEngine] Skipped systemFields persist for unknown recordType: \(record.recordType)")
+            }
+        } catch {
+            print("[SyncEngine] Failed to persist systemFields for \(record.recordID.recordName): \(error)")
         }
     }
 
@@ -412,6 +488,12 @@ extension SyncEngine: CKSyncEngineDelegate {
             }
 
         case .sentRecordZoneChanges(let sentEvent):
+            // Persist the server's updated systemFields blob for every successful save.
+            // Without this, the next save would carry a stale recordChangeTag and trip
+            // serverRecordChanged on every second upload.
+            for save in sentEvent.savedRecords {
+                persistSystemFields(for: save)
+            }
             // Log failed saves — CKSyncEngine retries transient errors automatically.
             for failure in sentEvent.failedRecordSaves {
                 print("[SyncEngine] Failed to save record \(failure.record.recordID.recordName): \(failure.error)")
