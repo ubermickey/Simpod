@@ -104,9 +104,27 @@ Simpod is a native iOS offline-first podcast player for Mike — a power listene
 
 ### Build / Test / Run
 ```bash
-xcodegen generate              # Regenerate .xcodeproj from project.yml
-xcodebuild -project Simpod.xcodeproj -scheme Simpod -destination 'platform=iOS Simulator,name=iPhone 15 Pro Max' build
-xcodebuild -project Simpod.xcodeproj -scheme SimpodTests -destination 'platform=iOS Simulator,name=iPhone 15 Pro Max' test
+xcodegen generate              # Regenerate .xcodeproj from project.yml — REQUIRED after adding/removing source or test files
+
+# NOTE: Multiple iPhone 15 Pro Max sims (different OS versions) are installed; `name=iPhone 15 Pro Max` is ambiguous.
+# Use the explicit UDID for OS 26.3.1 to avoid xcodebuild "Multiple matching destinations" warnings:
+SIM_UDID=E00919BB-FA1F-45D3-9E7E-F23D495E78E2
+
+xcodebuild -project Simpod.xcodeproj -scheme Simpod      -destination "id=$SIM_UDID" build
+xcodebuild -project Simpod.xcodeproj -scheme SimpodTests -destination "id=$SIM_UDID" test
+
+# Run a single Swift Testing test by func name (NOT display name):
+xcodebuild -project Simpod.xcodeproj -scheme SimpodTests -destination "id=$SIM_UDID" \
+  test -only-testing:SimpodTests/SyncWiringTests/savePodcastWiresMarkDirty
+```
+
+### Install / Launch on Simulator
+```bash
+# Bundle ID is com.mikeudem.simpod (NOT com.simpod.app)
+APP=$(xcodebuild -project Simpod.xcodeproj -scheme Simpod -destination "id=$SIM_UDID" -showBuildSettings | awk -F' = ' '/CODESIGNING_FOLDER_PATH/ {print $2; exit}')
+xcrun simctl boot $SIM_UDID 2>/dev/null
+xcrun simctl install $SIM_UDID "$APP"
+xcrun simctl launch $SIM_UDID com.mikeudem.simpod
 ```
 
 ## Architecture
@@ -148,8 +166,8 @@ xcodebuild -project Simpod.xcodeproj -scheme SimpodTests -destination 'platform=
 | FeedEngine | subscribe, refresh, refreshAll, importOPML | URLSession, FeedKit v10, DataStore, CryptoKit | Conditional GET; body-hash short-circuit; ETag-rot defense; no-op write skip; idempotent | IN PROGRESS |
 | AudioEngine | play/pause/resume/stop/seek/speed/skip±; Now Playing + remote commands | AVFoundation, MediaPlayer, weak DataStore | Never silent fail; position persisted; route-change pause only on oldDeviceUnavailable | IN PROGRESS |
 | DownloadManager | download, cancel, progress, delete | URLSession bg, file storage, DataStore | Bg downloads; resumable; queryable size | DRAFT |
-| DataStore | CRUD, tags, moveToTop/Bottom, hide/unhide, currentPlayingPodcast, moveEpisodeToTopAndPlay | GRDB DatabasePool, CloudKit hook | Reads never block; queue consistent; refresh writes elide on no-op | IN PROGRESS |
-| SyncEngine | syncNow, syncState, lastSync | CKSyncEngine, DataStore | No overwrite newer; auto-retry; restore | DRAFT |
+| DataStore | CRUD + saveFromSync/saveSystemFields, tags, moveToTop/Bottom, hide/unhide, currentPlayingPodcast, moveEpisodeToTopAndPlay; weak SyncCoordinator | GRDB DatabasePool, SyncCoordinator | Reads never block; queue consistent; refresh writes elide on no-op; every mutation marks dirty (or is on skip list) | IN PROGRESS |
+| SyncEngine | syncNow, syncState, lastSync, markDirty/markDeleted | CKSyncEngine, DataStore | No overwrite newer; auto-retry; encodedSystemFields round-trip; cloudKitEnabled gated off | IN PROGRESS (gated) |
 | InboxManager | triage, triageAll, inboxCount | DataStore | All episodes start in inbox; one-tap | DRAFT |
 
 ## Key Paths
@@ -178,6 +196,8 @@ xcodebuild -project Simpod.xcodeproj -scheme SimpodTests -destination 'platform=
 | Refresh no-op elision | DataStore.saveRefreshResult | Skips transaction entirely when refresh fields are unchanged — no ValueObservation fire, no CKSyncEngine push |
 | os_signpost instrumentation | FeedEngine | http-fetch, xml-parse, refreshAll intervals; zero overhead when Instruments not attached |
 | MetricKit diagnostics | DiagnosticsManager | Observability-only; logs 24h metric/diagnostic payloads; no functional behavior change |
+| SyncCoordinator protocol seam | DataStore ↔ SyncEngine | Two-method protocol (markDirty/markDeleted) keeps DataStore CloudKit-symbol-free; AppContainer wires the weak ref post-init |
+| encodedSystemFields round-trip | SyncEngine ↔ DataStore (v6 migration) | Opaque BLOB column on Podcast/Episode/QueueItem; persisted on inbound apply, rehydrated on outbound to preserve recordChangeTag, written back on sentRecordZoneChanges echo |
 
 ## Swim Lanes
 
@@ -185,7 +205,7 @@ xcodebuild -project Simpod.xcodeproj -scheme SimpodTests -destination 'platform=
 |------|----------|-------------|--------|
 | Lane 1: Feed + Audio | RSS parsing, audio engine, downloads | None | IN PROGRESS |
 | Lane 2: UI Shell + Inbox | All SwiftUI screens, inbox triage | None (mock data) | NOT STARTED |
-| Lane 3: iCloud Sync | CKSyncEngine, CloudKit schema | None (local store) | NOT STARTED |
+| Lane 3: iCloud Sync | CKSyncEngine, CloudKit schema, encodedSystemFields round-trip, markDirty wiring | None (local store) | IN PROGRESS (gated; flag flip + entitlements + restore UI deferred) |
 | Lane 4: Integration | Wire all lanes together, E2E tests | Lanes 1+2+3 | NOT STARTED |
 | Lane 5: AI Playlists | AI service, recommendations | Lane 1 (post-MVP) | NOT STARTED |
 

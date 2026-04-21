@@ -56,10 +56,23 @@ Lane 4: DEPENDS ON Lanes 1, 2, 3 (sync point)
 - **Estimated effort**: L (many screens, interaction design)
 - **Pillar**: Pillar 1 (UI), Pillar 2 (UI)
 
-### Lane 3: iCloud Sync
+### Lane 3: iCloud Sync — IN PROGRESS (gated off pending paid Apple Developer team)
 - **Features**: CloudKit schema, CKSyncEngine integration, sync for subscriptions + queue + playback position + tags, conflict resolution, first-launch restore
 - **Depends on**: Nothing — can develop against local data store, sync layer is additive
 - **Deliverable**: Sync engine that mirrors local data to CloudKit and resolves conflicts
+- **Completed** (2026-04-20, commit `d3c642f`):
+  - Full `CKSyncEngineDelegate` implementation (493 LOC) for Podcast / Episode / QueueItem
+  - `encodedSystemFields` round-trip: v6 migration adds nullable `cloudKitSystemFields` BLOB to all three entity tables; `applyFetchedRecord` persists inbound blob; `ckRecord(for:)` rehydrates outbound from blob (preserves recordChangeTag); `sentRecordZoneChanges` echoes updated blob back via `saveSystemFields`
+  - `SyncCoordinator` protocol seam — DataStore stays CloudKit-free; `weak var syncCoordinator` wired in `AppContainer`
+  - 22 `DataStore` mutation sites wired to `markDirty`/`markDeleted`; explicit skip list (`saveFromSync`, `saveSystemFields`, `updateLocalFilePath`, `deleteByID`) prevents loops
+  - Characterization tests C1–C5 + wiring tests W1 (29 tests)
+  - All hard regression gates pass (R1 RSS efficiency, R2 debounce, R3 MediaPlayer, R4 no-view-touch, R5 cloudKitEnabled flag still `false`)
+- **Remaining (blocked on entitlements / paid team)**:
+  - Flip `cloudKitEnabled` flag at `SyncEngine.swift:116`
+  - Re-enable iCloud entitlements in `project.yml:20-28`
+  - Tag + EpisodeTag join-table CKRecord types
+  - First-launch restore UI / zone-bootstrap flow
+  - Real-device E2E sync verification
 - **Acceptance criteria**:
   - Data syncs within 30s
   - No data loss on conflict

@@ -80,7 +80,10 @@ STATUS: DRAFT
 ## MODULE CONTRACT: DataStore
 
 PROVIDES:
-- `save(podcast:)`, `save(episode:)`, `save(queueItem:)`: Persist entities
+- `save(podcast:)`, `save(episode:)`, `save(queueItem:)`: Persist entities (mark dirty for sync)
+- `saveFromSync(podcast:systemFields:)` / `saveFromSync(episode:systemFields:)` / `saveFromSync(queueItem:systemFields:)`: Inbound CloudKit apply path; persists model + systemFields blob in one transaction; never marks dirty
+- `saveSystemFields(podcastID:/episodeID:/queueItemID:, data:)`: Success-echo write-back from outbound CloudKit save; never marks dirty
+- `weak var syncCoordinator: SyncCoordinator?`: Optional seam — `AppContainer` wires this to `SyncEngine` post-init
 - `fetchPodcasts() -> [Podcast]`: All subscribed podcasts
 - `fetchEpisodes(for: Podcast) -> [Episode]`: Episodes for a podcast
 - `fetchQueue() -> [QueueItem]`: Ordered queue
@@ -95,37 +98,47 @@ PROVIDES:
 
 REQUIRES:
 - GRDB / SQLite with DatabasePool (Council #1: 2026-04-14)
-- CloudKit integration point for SyncEngine
+- `SyncCoordinator` protocol (lives in Modules/SyncEngine/) — decouples DataStore from CloudKit symbols
 
 INVARIANTS:
 - All reads are synchronous from local cache — never blocks on network
 - Queue order is always consistent (no gaps, no duplicates)
 - Deleting a podcast cascades to its episodes and queue items
+- Every public mutating method either calls `syncCoordinator?.markDirty(id:)` / `markDeleted(id:)` after the write commits, or appears on the explicit skip list (`saveFromSync*`, `saveSystemFields`, `updateLocalFilePath`, `deleteByID`) with a one-line reason
+- `markDirty`/`markDeleted` are called *after* the write transaction returns — never inside the transaction
+- `cloudKitSystemFields` BLOB columns (v6 migration) are nullable and treated as opaque — never inspected by DataStore
 
 OWNER: Lane 1 (Feed + Audio Engine) + Lane 3 (Sync)
-STATUS: DRAFT
+STATUS: IN PROGRESS (sync wiring + systemFields persistence shipped 2026-04-20; CloudKit gated off)
 
 ---
 
 ## MODULE CONTRACT: SyncEngine
 
 PROVIDES:
-- `syncNow() async`: Force immediate sync to iCloud
+- `syncNow() async`: Force immediate sync to iCloud (gated by `cloudKitEnabled`)
 - `syncState: SyncState`: .idle / .syncing / .error (observable)
 - `lastSyncDate: Date?`: When sync last succeeded
+- `markDirty(id:)` / `markDeleted(id:)`: `SyncCoordinator` protocol conformance — DataStore calls these after every user-visible mutation
+- `init(dataStore:skipCKSetup:)`: test-only initializer; production `init(dataStore:)` is unchanged
+- `internal` visibility for `applyFetchedRecord`, `resolveRecord(for:)`, `ckRecord(for:)`, `podcast(from:)` / `episode(from:)` / `queueItem(from:)` so characterization tests can exercise pure encode/decode/apply paths without standing up `CKSyncEngine`
 
 REQUIRES:
 - CloudKit / CKSyncEngine (iOS 17+)
-- DataStore — reads and writes all entities
+- DataStore — reads and writes all entities (via `saveFromSync(...:systemFields:)` for inbound, `saveSystemFields(...)` for success echo)
 - Network access
+- `SyncCoordinator` protocol (in `Modules/SyncEngine/SyncCoordinator.swift`)
 
 INVARIANTS:
-- Never overwrites newer data with older data (last-writer-wins with timestamps)
-- Sync failures are retried automatically with exponential backoff
-- Works correctly on first launch with existing iCloud data (restore flow)
+- `cloudKitEnabled = false` is hardcoded at `SyncEngine.swift:116` — flag flip is a separate iteration gated on paid Apple Developer team
+- `encodedSystemFields` is opaque bookkeeping — never parsed or compared; persisted alongside model fields atomically on inbound apply, rehydrated for outbound saves to preserve `recordChangeTag`
+- Last-writer-wins on `lastModified` for model fields; the systemFields blob is wire-protocol bookkeeping, not a tiebreaker
+- Sync failures are retried automatically with exponential backoff (`shouldRetry` delegate hook)
+- Works correctly on first launch with existing iCloud data (restore flow — DEFERRED, follow-up iteration)
+- Cascade deletion: `deletePodcast` marks only the parent; CloudKit-side cascade by convention (sharp edge documented for follow-up Tag/restore work)
 
 OWNER: Lane 3 (iCloud Sync)
-STATUS: DRAFT
+STATUS: IN PROGRESS (encoder/decoder/apply paths shipped 2026-04-20; gated off pending paid Apple Developer team)
 
 ---
 
@@ -157,6 +170,6 @@ STATUS: DRAFT
 | FeedEngine | subscribe, refresh, refreshAll, importOPML | URLSession, FeedKit v10, DataStore, CryptoKit | Conditional GET; body-hash short-circuit; ETag-rot defense; no-op write skip; idempotent | IN PROGRESS |
 | AudioEngine | play/pause/resume/stop/seek/speed/skip±; Now Playing + remote commands | AVFoundation, MediaPlayer, weak DataStore, bg audio entitlement | Never silent fail; position persisted; route-change pause only on oldDeviceUnavailable; MediaPlayer publish/mutate/clear | IN PROGRESS |
 | DownloadManager | download, cancel, progress, delete | URLSession bg, file storage, DataStore | Bg downloads; resumable; queryable size | DRAFT |
-| DataStore | CRUD, tags, moveToTop/Bottom, hide/unhide, addToQueueAtTop, currentPlayingPodcast, moveEpisodeToTopAndPlay | GRDB DatabasePool, CloudKit hook | Reads never block; queue consistent; refresh writes elide on no-op | IN PROGRESS |
-| SyncEngine | syncNow, syncState, lastSync | CKSyncEngine, DataStore | No overwrite newer; auto-retry; restore | DRAFT |
+| DataStore | CRUD + saveFromSync/saveSystemFields, tags, moveToTop/Bottom, hide/unhide, addToQueueAtTop, currentPlayingPodcast, moveEpisodeToTopAndPlay; weak SyncCoordinator | GRDB DatabasePool, SyncCoordinator protocol | Reads never block; queue consistent; refresh writes elide on no-op; every mutation marks dirty (or is on skip list) | IN PROGRESS |
+| SyncEngine | syncNow, syncState, lastSync, markDirty/markDeleted (SyncCoordinator) | CKSyncEngine, DataStore | No overwrite newer; auto-retry; encodedSystemFields round-trip; cloudKitEnabled gated off | IN PROGRESS (gated) |
 | InboxManager | triage, triageAll, inboxCount | DataStore | All episodes start in inbox; one-tap | DRAFT |
